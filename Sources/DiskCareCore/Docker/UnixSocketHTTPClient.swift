@@ -33,7 +33,7 @@ public enum HTTPClientError: Error, Sendable, CustomStringConvertible {
     }
 }
 
-/// Minimal HTTP/1.1 GET client over a unix domain socket (one request per connection).
+/// Minimal HTTP/1.1 client over a unix domain socket (one request per connection).
 public struct UnixSocketHTTPClient: Sendable {
     public let socketPath: String
     /// Applies to connect and to the whole request/response exchange.
@@ -47,12 +47,41 @@ public struct UnixSocketHTTPClient: Sendable {
     }
 
     public func get(_ path: String, host: String = "localhost") throws -> HTTPResponse {
+        try request("GET", path, host: host)
+    }
+
+    public func post(_ target: String, json body: Data? = nil, host: String = "localhost") throws -> HTTPResponse {
+        try request("POST", target, body: body, host: host)
+    }
+
+    public func delete(_ target: String, host: String = "localhost") throws -> HTTPResponse {
+        try request("DELETE", target, host: host)
+    }
+
+    /// Runs the blocking request on a detached thread so it never stalls the cooperative pool.
+    public func get(_ path: String, host: String = "localhost") async throws -> HTTPResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            Thread.detachNewThread {
+                continuation.resume(with: Result { try get(path, host: host) })
+            }
+        }
+    }
+
+    /// `target` is the request target (path plus already-encoded query). A nil body sends no
+    /// payload; POST/PUT/DELETE always carry `Content-Length` so the daemon never waits for one.
+    public func request(
+        _ method: String,
+        _ target: String,
+        body: Data? = nil,
+        contentType: String = "application/json",
+        host: String = "localhost"
+    ) throws -> HTTPResponse {
         let deadline = Date().addingTimeInterval(timeout)
         let fd = try connect(deadline: deadline)
         defer { close(fd) }
 
-        let request = "GET \(path) HTTP/1.1\r\nHost: \(host)\r\nUser-Agent: diskcare\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
-        try send(Array(request.utf8), on: fd, deadline: deadline)
+        let requestHead = Self.requestHead(method: method, target: target, body: body, contentType: contentType, host: host)
+        try send(requestHead + Array(body ?? Data()), on: fd, deadline: deadline)
 
         var buffer: [UInt8] = []
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
@@ -80,13 +109,14 @@ public struct UnixSocketHTTPClient: Sendable {
         return response
     }
 
-    /// Runs the blocking request on a detached thread so it never stalls the cooperative pool.
-    public func get(_ path: String, host: String = "localhost") async throws -> HTTPResponse {
-        try await withCheckedThrowingContinuation { continuation in
-            Thread.detachNewThread {
-                continuation.resume(with: Result { try get(path, host: host) })
-            }
+    static func requestHead(method: String, target: String, body: Data?, contentType: String, host: String) -> [UInt8] {
+        var head = "\(method) \(target) HTTP/1.1\r\nHost: \(host)\r\nUser-Agent: diskcare\r\nAccept: application/json\r\nConnection: close\r\n"
+        if let body {
+            head += "Content-Type: \(contentType)\r\nContent-Length: \(body.count)\r\n"
+        } else if method != "GET" && method != "HEAD" {
+            head += "Content-Length: 0\r\n"
         }
+        return Array((head + "\r\n").utf8)
     }
 
     private func connect(deadline: Date) throws -> Int32 {

@@ -80,10 +80,20 @@ struct Scan: ParsableCommand {
 }
 
 struct Docker: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Report Docker disk usage and unused images, volumes and containers (read-only).")
+    static let configuration = CommandConfiguration(
+        abstract: "Report Docker disk usage, clean unused resources, back up and restore volumes.",
+        subcommands: [DockerReportCommand.self, DockerCleanCommand.self, DockerRestoreCommand.self],
+        defaultSubcommand: DockerReportCommand.self
+    )
+}
 
-    @Option(name: .long, help: "Docker socket path (default: DOCKER_HOST, OrbStack, Docker Desktop, /var/run/docker.sock).")
-    var socket: String?
+struct DockerReportCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "report",
+        abstract: "Report Docker disk usage and unused images, volumes and containers (read-only)."
+    )
+
+    @OptionGroup var docker: DockerArguments
 
     @Option(name: .long, help: "Rows to show per table.")
     var top: Int = 15
@@ -92,7 +102,7 @@ struct Docker: ParsableCommand {
     var json = false
 
     func run() throws {
-        let report = DockerScanner.scan(DockerScanner.Options(socketPath: socket))
+        let report = DockerScanner.scan(DockerScanner.Options(socketPath: docker.socket))
         if json {
             try printJSON(report)
         } else {
