@@ -65,8 +65,7 @@ struct MainWindow: View {
         case .overview: OverviewView(model: model)
         case .projects: ProjectsView(model: model)
         case .docker: DockerSummaryView(report: model.dockerReport, onFinished: { model.scan() })
-        case .caches:
-            ContentUnavailableView(section.title, systemImage: section.systemImage, description: Text("Coming soon"))
+        case .caches: ScrollView { CachesView(model: model.caches).padding(20) }
         case .growth: ScrollView { GrowthView(model: model.growth).padding(20) }
         case .doctor: ScrollView { DoctorView(report: model.report).padding(20) }
         }

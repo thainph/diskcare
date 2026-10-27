@@ -11,6 +11,11 @@ final class AppModel {
     let settings: AppSettings
     /// Scan history, 7-day growth and the live FSEvents growth watcher.
     let growth = GrowthModel()
+    /// Global developer caches (~/Library/Caches, ~/.cache, package manager stores…).
+    @ObservationIgnored private(set) lazy var caches = CachesModel(
+        moveToTrash: { [settings] in settings.moveToTrash },
+        onCleaned: { [weak self] _ in self?.refreshFreeSpace() }
+    )
 
     private(set) var report: ScanReport?
     private(set) var dockerReport: DockerReport?
