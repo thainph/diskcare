@@ -2,6 +2,11 @@
 
 All notable changes to DiskCare are documented here. Versions follow [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- App icon (disk gauge with a sparkle), rendered from code by `scripts/make-icon.swift`.
+
 ## [0.1.0] - 2026-10-27
 
 First public preview for macOS 15+ on Apple silicon.

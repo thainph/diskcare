@@ -1,3 +1,5 @@
+<img src="Resources/AppIcon-1024.png" width="128" alt="DiskCare icon" align="right">
+
 # DiskCare
 
 [![CI](https://github.com/thainph/diskcare/actions/workflows/ci.yml/badge.svg)](https://github.com/thainph/diskcare/actions/workflows/ci.yml)
@@ -111,6 +113,7 @@ your local Docker daemon to pull `alpine` once). Files it writes:
 ```bash
 git clone https://github.com/thainph/diskcare.git && cd diskcare
 swift test                                   # unit tests
+./scripts/make-icon.sh                       # re-render Resources/AppIcon.icns (only after editing the icon)
 ./scripts/bundle-app.sh                      # → .build/DiskCare.app (ad-hoc signed, arm64)
 open .build/DiskCare.app
 ./scripts/package-release.sh                 # → dist/ (dmg, zip, CLI tarball, SHA256SUMS)
@@ -123,7 +126,8 @@ Sources/DiskCareCore   engine: scanner, artifact rules, git, cleanup, caches, Do
 Sources/diskcare       CLI (swift-argument-parser)
 Sources/DiskCareApp    SwiftUI menu bar app
 Tests/                 swift-testing suites
-scripts/               bundle-app.sh, package-release.sh
+Resources/             AppIcon.icns + 1024 px PNG (rendered by scripts/make-icon.swift)
+scripts/               bundle-app.sh, package-release.sh, make-icon.sh
 ```
 
 ## CI/CD
