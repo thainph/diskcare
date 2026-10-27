@@ -20,6 +20,7 @@ final class AppModel {
     private(set) var report: ScanReport?
     private(set) var dockerReport: DockerReport?
     private(set) var freeBytes: Int64?
+    private(set) var totalBytes: Int64?
     private(set) var lastScanAt: Date?
     private(set) var isScanning = false
     private(set) var isCleaning = false
@@ -49,12 +50,31 @@ final class AppModel {
         plan.filter { !deselected.contains($0.path) }
     }
 
+    var planBytes: Int64 { plan.reduce(0) { $0 + $1.bytes } }
+
+    /// Reclaimable space per source, in display order.
+    var reclaimable: [(SpaceSource, Int64)] {
+        [
+            (.projects, planBytes),
+            (.caches, caches.report?.safeReclaimableBytes ?? 0),
+            (.docker, dockerReport?.safeReclaimableBytes ?? 0),
+        ]
+    }
+
+    var reclaimableTotal: Int64 { reclaimable.reduce(0) { $0 + $1.1 } }
+
+    func selectAllPlan() { deselected.removeAll() }
+
+    func selectNoPlan() { deselected = Set(plan.map(\.path)) }
+
+    func dismissCleanupMessage() { lastCleanupMessage = nil }
+
     var isLowOnSpace: Bool {
         freeBytes.map { $0 < settings.lowSpaceThresholdBytes } ?? false
     }
 
     var menuTitle: String {
-        freeBytes.map { ByteFormat.string($0) + " free" } ?? "DiskCare"
+        freeBytes.map { ByteFormat.string($0) } ?? "DiskCare"
     }
 
     // MARK: Scanning
@@ -62,6 +82,7 @@ final class AppModel {
     func scan() {
         guard !isScanning, !isCleaning else { return }
         isScanning = true
+        caches.scan()
         let options = ScanOptions(roots: settings.roots)
         Task {
             async let files = DiskAnalyzer.analyze(options)
@@ -79,6 +100,8 @@ final class AppModel {
 
     func refreshFreeSpace() {
         freeBytes = Cleaner.availableCapacity(at: NSHomeDirectory())
+        totalBytes = (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey]))?
+            .volumeTotalCapacity.map(Int64.init)
     }
 
     /// Rescans periodically when the system decides it is a good time (idle, on power…).

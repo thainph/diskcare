@@ -86,24 +86,29 @@ final class CachesModel {
 /// User-data caches (models, archives) are listed but can never be selected.
 struct CachesView: View {
     @Bindable var model: CachesModel
+    var showsHeader = true
+    /// nil = no inner scroll view (the host page scrolls).
+    var listMaxHeight: CGFloat? = 320
     @State private var confirming = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            header
+            if showsHeader { header }
             if let report = model.report {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(CacheCategory.allCases, id: \.self) { category in
-                            let entries = report.entries.filter { $0.category == category && $0.bytes > 0 }
-                            if !entries.isEmpty {
-                                section(category, entries)
-                            }
+                if showsHeader { footer } else { footer.padding(.bottom, 4); Divider() }
+                let list = VStack(alignment: .leading, spacing: 16) {
+                    ForEach(CacheCategory.allCases, id: \.self) { category in
+                        let entries = report.entries.filter { $0.category == category && $0.bytes > 0 }
+                        if !entries.isEmpty {
+                            section(category, entries)
                         }
                     }
                 }
-                .frame(maxHeight: 320)
-                footer
+                if let listMaxHeight {
+                    ScrollView { list }.frame(maxHeight: listMaxHeight)
+                } else {
+                    list
+                }
             } else {
                 Text(model.isScanning ? "Measuring caches…" : "Not scanned yet").font(.callout).foregroundStyle(.secondary)
             }
@@ -138,7 +143,7 @@ struct CachesView: View {
 
     private func section(_ category: CacheCategory, _ entries: [CacheEntry]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(category.title).font(.caption).foregroundStyle(.secondary)
+            Text(category.title.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             ForEach(entries) { entry in
                 CacheEntryRow(entry: entry, model: model)
             }

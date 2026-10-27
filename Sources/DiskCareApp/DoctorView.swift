@@ -63,11 +63,14 @@ final class DoctorModel {
 /// Self-contained: pass the latest scan report; the view owns its model.
 struct DoctorView: View {
     let report: ScanReport?
+    var showsHeader = true
+    /// nil = no inner scroll view (the host page scrolls).
+    var listMaxHeight: CGFloat? = 260
     @State private var model = DoctorModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            if showsHeader { HStack {
                 Text("Doctor").font(.headline)
                 Spacer()
                 if model.isRunning { ProgressView().controlSize(.small) }
@@ -79,18 +82,21 @@ struct DoctorView: View {
                 .buttonStyle(.borderless)
                 .disabled(model.isRunning)
                 .help("Run checks again")
-            }
+            } }
             if model.results.isEmpty {
                 Text(model.isRunning ? "Checking…" : "No results yet").font(.callout).foregroundStyle(.secondary)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.results) { result in
-                            CheckRow(result: result) { model.proposeFix(result.id) }
-                        }
+                let list = VStack(alignment: .leading, spacing: 14) {
+                    ForEach(sortedResults) { result in
+                        CheckRow(result: result) { model.proposeFix(result.id) }
+                        if result.id != sortedResults.last?.id { Divider() }
                     }
                 }
-                .frame(maxHeight: 260)
+                if let listMaxHeight {
+                    ScrollView { list }.frame(maxHeight: listMaxHeight)
+                } else {
+                    list
+                }
             }
             if let message = model.message {
                 Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(3)
@@ -104,6 +110,20 @@ struct DoctorView: View {
             Button("Write config") { model.applyPendingFix(report: report) }
         } message: {
             Text(confirmMessage)
+        }
+    }
+
+    /// Actionable items first: warnings, then suggestions with savings, then OK.
+    private var sortedResults: [CheckResult] {
+        func rank(_ status: CheckStatus) -> Int {
+            switch status {
+            case .warning: 0
+            case .info: 1
+            case .ok: 2
+            }
+        }
+        return model.results.sorted {
+            (rank($0.status), -($0.estimatedSavingsBytes ?? 0)) < (rank($1.status), -($1.estimatedSavingsBytes ?? 0))
         }
     }
 

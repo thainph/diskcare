@@ -51,14 +51,24 @@ final class DockerCleanupModel {
 
 /// Docker cleanup actions for a scanned `DockerReport`. Self-contained: embed it and rescan in `onFinished`.
 struct DockerCleanupView: View {
+    enum Scope {
+        /// Images, build cache, stopped containers, anonymous volumes.
+        case safe
+        /// Named volumes (backed up before deletion).
+        case dataVolumes
+        case all
+    }
+
     let report: DockerReport
+    var scope: Scope = .all
     /// Called on the main actor after any cleanup finished (successfully or not); trigger a rescan here.
     var onFinished: () -> Void = {}
     @State private var model: DockerCleanupModel
     @State private var pending: PendingAction?
 
-    init(report: DockerReport, backupDirectory: URL = DockerVolumeBackup.defaultDirectory, onFinished: @escaping () -> Void = {}) {
+    init(report: DockerReport, scope: Scope = .all, backupDirectory: URL = DockerVolumeBackup.defaultDirectory, onFinished: @escaping () -> Void = {}) {
         self.report = report
+        self.scope = scope
         self.onFinished = onFinished
         _model = State(initialValue: DockerCleanupModel(backupDirectory: backupDirectory))
     }
@@ -68,7 +78,7 @@ struct DockerCleanupView: View {
             if !report.available {
                 Text("Docker is not running").font(.callout).foregroundStyle(.secondary)
             } else {
-                if imagesAndCacheBytes > 0 || !report.unusedImages.isEmpty {
+                if scope != .dataVolumes, imagesAndCacheBytes > 0 || !report.unusedImages.isEmpty {
                     actionRow(
                         title: "Unused images & build cache",
                         detail: "\(report.unusedImages.count) images, \(report.buildCache.records - report.buildCache.inUse) cache records",
@@ -76,7 +86,7 @@ struct DockerCleanupView: View {
                         action: .imagesAndCache
                     )
                 }
-                if !report.stoppedContainers.isEmpty {
+                if scope != .dataVolumes, !report.stoppedContainers.isEmpty {
                     actionRow(
                         title: "Stopped containers",
                         detail: "\(report.stoppedContainers.count) containers",
@@ -84,7 +94,7 @@ struct DockerCleanupView: View {
                         action: .containers
                     )
                 }
-                ForEach(report.unusedVolumeGroups) { group in
+                ForEach(report.unusedVolumeGroups.filter(includes)) { group in
                     actionRow(
                         title: group.isAnonymous ? "Anonymous volumes" : (group.composeProject ?? "Volumes without project"),
                         detail: "\(group.volumes.count) volume\(group.volumes.count == 1 ? "" : "s")"
@@ -131,6 +141,14 @@ struct DockerCleanupView: View {
                 }
             }
             .disabled(model.isRunning)
+        }
+    }
+
+    private func includes(_ group: DockerVolumeGroup) -> Bool {
+        switch scope {
+        case .safe: group.isAnonymous
+        case .dataVolumes: !group.isAnonymous
+        case .all: true
         }
     }
 

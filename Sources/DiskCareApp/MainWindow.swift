@@ -3,7 +3,7 @@ import DiskCareCore
 import SwiftUI
 
 enum MainSection: String, CaseIterable, Identifiable {
-    case overview, projects, docker, caches, growth, doctor
+    case overview, projects, caches, docker, growth, doctor
 
     var id: String { rawValue }
 
@@ -11,10 +11,10 @@ enum MainSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "Overview"
         case .projects: "Projects"
-        case .docker: "Docker"
         case .caches: "Caches"
+        case .docker: "Docker"
         case .growth: "Growth"
-        case .doctor: "Doctor"
+        case .doctor: "Prevention"
         }
     }
 
@@ -22,8 +22,8 @@ enum MainSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "gauge.with.dots.needle.33percent"
         case .projects: "folder"
-        case .docker: "shippingbox"
         case .caches: "archivebox"
+        case .docker: "shippingbox"
         case .growth: "chart.line.uptrend.xyaxis"
         case .doctor: "stethoscope"
         }
@@ -37,26 +37,53 @@ struct MainWindow: View {
 
     var body: some View {
         NavigationSplitView {
-            List(MainSection.allCases, selection: $model.selectedSection) { section in
-                Label(section.title, systemImage: section.systemImage).tag(section)
+            List(selection: $model.selectedSection) {
+                Label(MainSection.overview.title, systemImage: MainSection.overview.systemImage)
+                    .tag(MainSection.overview)
+                Section("Free up space") {
+                    ForEach(SpaceSource.allCases) { source in
+                        sidebarRow(source.section, bytes: bytes(for: source))
+                    }
+                }
+                Section("Keep it clean") {
+                    Label(MainSection.growth.title, systemImage: MainSection.growth.systemImage)
+                        .badge(model.growth.liveAlerts.count)
+                        .tag(MainSection.growth)
+                    Label(MainSection.doctor.title, systemImage: MainSection.doctor.systemImage)
+                        .tag(MainSection.doctor)
+                }
             }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 180)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210)
         } detail: {
             detail(model.selectedSection ?? .overview)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle((model.selectedSection ?? .overview).title)
+                .navigationTitle("DiskCare")
                 .toolbar {
-                    ToolbarItem {
+                    ToolbarItemGroup {
+                        if model.isScanning {
+                            ProgressView().controlSize(.small)
+                        }
                         Button {
                             model.scan()
                         } label: {
                             Label("Scan now", systemImage: "arrow.clockwise")
                         }
+                        .help("Scan projects, caches and Docker again")
                         .disabled(model.isScanning || model.isCleaning)
                     }
                 }
         }
-        .frame(minWidth: 820, minHeight: 560)
+        .frame(minWidth: 860, minHeight: 600)
+    }
+
+    private func sidebarRow(_ section: MainSection, bytes: Int64) -> some View {
+        Label(section.title, systemImage: section.systemImage)
+            .badge(bytes > 0 ? Text(ByteFormat.string(bytes)).monospacedDigit() : nil)
+            .tag(section)
+    }
+
+    private func bytes(for source: SpaceSource) -> Int64 {
+        model.reclaimable.first { $0.0 == source }?.1 ?? 0
     }
 
     @ViewBuilder
@@ -64,124 +91,236 @@ struct MainWindow: View {
         switch section {
         case .overview: OverviewView(model: model)
         case .projects: ProjectsView(model: model)
-        case .docker: DockerSummaryView(report: model.dockerReport, onFinished: { model.scan() })
-        case .caches: ScrollView { CachesView(model: model.caches).padding(20) }
-        case .growth: ScrollView { GrowthView(model: model.growth).padding(20) }
-        case .doctor: ScrollView { DoctorView(report: model.report).padding(20) }
+        case .caches: CachesPage(model: model)
+        case .docker: DockerPage(model: model)
+        case .growth: GrowthPage(model: model)
+        case .doctor: DoctorPage(model: model)
         }
     }
 }
+
+/// Shared page scaffold: scrollable, consistent padding and spacing.
+struct Page<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16, content: content)
+                .padding(24)
+                .frame(maxWidth: 980, alignment: .leading)
+        }
+    }
+}
+
+// MARK: Overview
 
 struct OverviewView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 16) {
-                    StatTile(title: "Free space", value: model.freeBytes.map(ByteFormat.string) ?? "–",
-                             warning: model.isLowOnSpace)
-                    StatTile(title: "Regenerable artifacts", value: model.report.map { ByteFormat.string($0.regenerableBytes) } ?? "–")
-                    StatTile(title: "Docker reclaimable", value: model.dockerReport.map {
-                        $0.available ? ByteFormat.string($0.reclaimableBytes) : "off"
-                    } ?? "–")
-                }
-                if let report = model.report {
-                    GroupBox("Artifacts by kind") {
-                        VStack(spacing: 4) {
-                            ForEach(report.kindSummaries) { summary in
-                                HStack {
-                                    Text(summary.kind.rawValue)
-                                    Text("×\(summary.count)").foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(summary.kind.restoreHint).font(.caption).foregroundStyle(.secondary)
-                                    Text(ByteFormat.string(summary.bytes)).monospacedDigit().frame(width: 80, alignment: .trailing)
-                                }
-                            }
-                        }
-                        .padding(4)
-                    }
-                    Text("Scanned \(report.stats.files.formatted()) files in \(String(format: "%.1f", report.stats.durationSeconds))s · roots: \(report.roots.map(\.abbreviatingHome).joined(separator: ", "))")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    ProgressView("Scanning…")
+        Page {
+            PageHeader(
+                title: "Overview",
+                subtitle: "How your startup disk is used and how much DiskCare can safely free."
+            )
+            if model.isLowOnSpace {
+                StatusBanner(message: "Free space is below your \(model.settings.lowSpaceThresholdGB) GB warning threshold. Start with the largest item below.", isError: true)
+            }
+            diskCard
+            reclaimCard
+            if !model.growth.liveAlerts.isEmpty || (model.growth.report?.alerts.isEmpty == false) {
+                Card(title: "Growing fast", systemImage: "chart.line.uptrend.xyaxis") {
+                    GrowthView(model: model.growth, maxRows: 3, showsHeader: false)
+                    Button("See growth details") { model.selectedSection = .growth }.buttonStyle(.link)
                 }
             }
-            .padding(20)
+        }
+    }
+
+    private var diskCard: some View {
+        Card {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(model.freeBytes.map(ByteFormat.string) ?? "–")
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .foregroundStyle(model.isLowOnSpace ? .red : .primary)
+                Text("free").font(.title3).foregroundStyle(.secondary)
+                if let total = model.totalBytes {
+                    Text("of \(ByteFormat.string(total))").font(.title3).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let date = model.lastScanAt {
+                    Text("Scanned \(date, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let total = model.totalBytes, let free = model.freeBytes {
+                DiskUsageBar(totalBytes: total, freeBytes: free, reclaimable: model.reclaimable, height: 18)
+            }
+        }
+    }
+
+    private var reclaimCard: some View {
+        Card {
+            HStack(alignment: .firstTextBaseline) {
+                Text("You can free up").font(.headline)
+                Text(ByteFormat.string(model.reclaimableTotal)).font(.headline).monospacedDigit()
+                Spacer()
+                if model.isScanning {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            ForEach(sortedSources, id: \.0) { source, bytes in
+                Divider()
+                HStack(spacing: 12) {
+                    Image(systemName: source.systemImage)
+                        .font(.title3)
+                        .foregroundStyle(source.color)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(source.title).font(.body.weight(.medium))
+                        Text(source.explanation).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(bytes > 0 ? ByteFormat.string(bytes) : "Nothing to free")
+                        .font(bytes > 0 ? .title3.weight(.semibold) : .callout)
+                        .foregroundStyle(bytes > 0 ? .primary : .secondary)
+                        .monospacedDigit()
+                    Button("Review") { model.selectedSection = source.section }
+                }
+            }
+        }
+    }
+
+    /// Largest first: the user's next best action is always at the top.
+    private var sortedSources: [(SpaceSource, Int64)] {
+        model.reclaimable.sorted { $0.1 > $1.1 }
+    }
+}
+
+// MARK: Caches
+
+struct CachesPage: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        let caches = model.caches
+        Page {
+            PageHeader(
+                title: "Developer caches",
+                subtitle: "Shared caches of package managers, browsers for testing and Xcode. Tools download or rebuild them when needed. Items marked “user data” are never cleaned.",
+                value: caches.report.map { ByteFormat.string($0.safeReclaimableBytes) },
+                valueCaption: caches.report.map { "safe to clean of \(ByteFormat.string($0.totalBytes))" }
+            )
+            Card {
+                if caches.report == nil {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Measuring caches…").foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 80)
+                }
+                CachesView(model: caches, showsHeader: false, listMaxHeight: nil)
+            }
         }
     }
 }
 
-struct StatTile: View {
-    let title: String
-    let value: String
-    var warning = false
+// MARK: Docker
+
+struct DockerPage: View {
+    @Bindable var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .foregroundStyle(warning ? .red : .primary)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-/// Docker breakdown plus cleanup actions (DockerCleanupView).
-struct DockerSummaryView: View {
-    let report: DockerReport?
-    var onFinished: () -> Void = {}
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if let report, report.available {
-                    GroupBox("Disk usage") {
-                        VStack(spacing: 4) {
+        Page {
+            PageHeader(
+                title: "Docker",
+                subtitle: "Images, build cache and containers nobody uses, plus volumes left behind by removed containers. Named volumes may hold databases, so they are backed up before deletion.",
+                value: model.dockerReport.flatMap { $0.available ? ByteFormat.string($0.safeReclaimableBytes) : nil },
+                valueCaption: "safe to remove"
+            )
+            if let report = model.dockerReport {
+                if report.available {
+                    Card(title: "Safe to remove", systemImage: "checkmark.shield") {
+                        Text("Re-created automatically: images are pulled or rebuilt, caches refill.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if report.safeReclaimableBytes == 0 {
+                            Text("Nothing to remove right now.").foregroundStyle(.secondary)
+                        } else {
+                            DockerCleanupView(report: report, scope: .safe, onFinished: { model.scan() })
+                        }
+                    }
+                    if report.dataVolumeBytes > 0 {
+                        Card(title: "Volumes that may contain data · \(ByteFormat.string(report.dataVolumeBytes))", systemImage: "cylinder.split.1x2") {
+                            Text("No container uses these volumes, but they can hold databases of old projects. Each volume is archived to ~/DiskCareBackups before it is deleted and can be restored later.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            DockerCleanupView(report: report, scope: .dataVolumes, onFinished: { model.scan() })
+                        }
+                    }
+                    Card(title: "Disk usage", systemImage: "chart.bar") {
+                        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                            GridRow {
+                                Text("Type"); Text("In use"); Text("Size"); Text("Reclaimable")
+                            }
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             ForEach(report.categories) { category in
-                                HStack {
+                                GridRow {
                                     Text(category.category.title)
-                                    Text("\(category.activeCount)/\(category.totalCount) active").foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(ByteFormat.string(category.totalBytes)).monospacedDigit().frame(width: 80, alignment: .trailing)
-                                    Text(ByteFormat.string(category.reclaimableBytes)).monospacedDigit().foregroundStyle(.secondary)
-                                        .frame(width: 80, alignment: .trailing)
+                                    Text("\(category.activeCount) of \(category.totalCount)").foregroundStyle(.secondary)
+                                    Text(ByteFormat.string(category.totalBytes)).monospacedDigit()
+                                    Text(ByteFormat.string(category.reclaimableBytes)).monospacedDigit()
                                 }
                             }
                         }
-                        .padding(4)
                     }
-                    GroupBox("Clean up") {
-                        DockerCleanupView(report: report, onFinished: onFinished).padding(4)
-                    }
-                    GroupBox("Unused volumes by project") {
-                        VStack(spacing: 4) {
-                            ForEach(report.unusedVolumeGroups) { group in
-                                HStack {
-                                    Text(group.isAnonymous ? "anonymous" : (group.composeProject ?? "no project"))
-                                    if group.volumes.contains(where: \.mayHoldData) {
-                                        Image(systemName: "cylinder.split.1x2").foregroundStyle(.orange)
-                                            .help("Named volumes may hold database data")
-                                    }
-                                    Text("×\(group.volumes.count)").foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(ByteFormat.string(group.bytes)).monospacedDigit()
-                                }
-                            }
-                        }
-                        .padding(4)
-                    }
-                } else if let report {
-                    ContentUnavailableView("Docker not running", systemImage: "shippingbox",
-                                           description: Text(report.error ?? ""))
                 } else {
-                    ProgressView()
+                    Card {
+                        ContentUnavailableView {
+                            Label("Docker isn't running", systemImage: "shippingbox")
+                        } description: {
+                            Text("Start Docker Desktop or OrbStack, then scan again.")
+                        } actions: {
+                            Button("Scan again") { model.scan() }
+                        }
+                    }
                 }
+            } else {
+                ProgressView("Checking Docker…")
             }
-            .padding(20)
+        }
+    }
+}
+
+// MARK: Growth & Prevention
+
+struct GrowthPage: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Page {
+            PageHeader(
+                title: "Growth",
+                subtitle: "Folders that grew the most over the last \(model.growth.days) days. DiskCare also watches build folders live and notifies you when one grows fast."
+            )
+            Card {
+                GrowthView(model: model.growth, maxRows: 25)
+            }
+        }
+    }
+}
+
+struct DoctorPage: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Page {
+            PageHeader(
+                title: "Prevention",
+                subtitle: "Tool settings that stop the same waste from coming back, e.g. sharing Terraform providers or Rust build output across projects. Fixes show the exact change and back up the file first."
+            )
+            Card {
+                DoctorView(report: model.report, showsHeader: false, listMaxHeight: nil)
+            }
         }
     }
 }

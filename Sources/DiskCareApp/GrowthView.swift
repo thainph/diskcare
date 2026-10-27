@@ -107,19 +107,20 @@ final class GrowthModel {
 struct GrowthView: View {
     var model: GrowthModel
     var maxRows = 5
+    var showsHeader = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Growth").font(.headline)
-                Text("last \(model.days)d").font(.caption).foregroundStyle(.secondary)
+            if showsHeader { HStack(alignment: .firstTextBaseline) {
+                Text("Free space").font(.headline)
+                Text("last \(model.days) days").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if let change = model.report?.freeSpaceChange {
                     Text("free \(signedBytes(change))")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(change < 0 ? .orange : .secondary)
                 }
-            }
+            } }
             if let points = model.report?.freeSpace, points.count > 1 {
                 FreeSpaceSparkline(points: points)
             }
@@ -158,7 +159,7 @@ struct GrowthView: View {
                 Text(report.latest == nil ? "No scan history yet." : "Growth appears after the next scan.")
                     .font(.caption).foregroundStyle(.secondary)
             } else if report.top.isEmpty {
-                Text("No artifact grew more than 100 MB.").font(.caption).foregroundStyle(.secondary)
+                Text("Nothing grew by more than 100 MB in this period.").font(.caption).foregroundStyle(.secondary)
             } else {
                 let alerted = Set(report.alerts.map(\.path))
                 ForEach(report.top.prefix(maxRows)) { entry in

@@ -2,65 +2,113 @@ import AppKit
 import DiskCareCore
 import SwiftUI
 
-/// Compact popover: headline numbers, the cleanup plan and a Docker summary.
+/// Glanceable popover: disk state, how much can be freed and where, one primary action.
+/// Destructive actions live in the main window, where the user can review each item.
 struct MenuContent: View {
     @Bindable var model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
+        VStack(alignment: .leading, spacing: 14) {
+            diskHeader
+            if model.isLowOnSpace {
+                StatusBanner(message: "Free space is below \(model.settings.lowSpaceThresholdGB) GB.", isError: true)
+            }
             Divider()
-            CleanupPlanView(model: model, maxListHeight: 200)
-            Divider()
-            dockerSummary
-            Divider()
+            reclaimableSection
+            growthAlert
+            Button {
+                openMain(.overview)
+            } label: {
+                Text("Review & Clean…").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
             footer
         }
-        .padding(14)
-        .frame(width: 460)
+        .padding(16)
+        .frame(width: 380)
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Free space").font(.caption).foregroundStyle(.secondary)
+    private var diskHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(model.freeBytes.map(ByteFormat.string) ?? "–")
-                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
                     .foregroundStyle(model.isLowOnSpace ? .red : .primary)
+                Text("free").foregroundStyle(.secondary)
+                Spacer()
+                if let total = model.totalBytes {
+                    Text("of \(ByteFormat.string(total))").font(.callout).foregroundStyle(.secondary)
+                }
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("Regenerable artifacts").font(.caption).foregroundStyle(.secondary)
-                Text(model.report.map { ByteFormat.string($0.regenerableBytes) } ?? "–")
-                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+            if let total = model.totalBytes, let free = model.freeBytes {
+                DiskUsageBar(totalBytes: total, freeBytes: free, reclaimable: model.reclaimable, height: 10, showsLegend: false)
             }
         }
     }
 
-    private var dockerSummary: some View {
-        HStack {
-            Text("Docker").font(.headline)
-            Spacer()
-            if let docker = model.dockerReport {
-                Text(docker.available ? "\(ByteFormat.string(docker.reclaimableBytes)) reclaimable" : "not running")
-                    .foregroundStyle(.secondary)
+    private var reclaimableSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("You can free up").font(.headline)
+                Spacer()
+                if model.isScanning {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning…").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(ByteFormat.string(model.reclaimableTotal)).font(.headline).monospacedDigit()
+                }
             }
-            Button("Details") { openMain(.docker) }
-                .buttonStyle(.link)
+            ForEach(model.reclaimable, id: \.0) { source, bytes in
+                Button {
+                    openMain(source.section)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: source.systemImage)
+                            .foregroundStyle(source.color)
+                            .frame(width: 18)
+                        Text(source.title)
+                        Spacer()
+                        Text(bytes > 0 ? ByteFormat.string(bytes) : "—")
+                            .monospacedDigit()
+                            .foregroundStyle(bytes > 0 ? .primary : .secondary)
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(source.explanation)
+            }
         }
-        .font(.callout)
+    }
+
+    @ViewBuilder
+    private var growthAlert: some View {
+        if let alert = model.growth.liveAlerts.first {
+            Button {
+                openMain(.growth)
+            } label: {
+                StatusBanner(message: alert.alert.message, isError: true)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var footer: some View {
-        HStack {
-            Button(model.isScanning ? "Scanning…" : "Scan now") { model.scan() }
-                .disabled(model.isScanning || model.isCleaning)
+        HStack(spacing: 12) {
             if let date = model.lastScanAt {
-                Text("updated \(date, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
+                Text("Updated \(date, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Open DiskCare") { openMain(.overview) }
+            Button {
+                model.scan()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .disabled(model.isScanning || model.isCleaning)
+            .help("Scan now")
             Button {
                 openWindow(id: SettingsView.windowID)
                 NSApp.activate()
@@ -75,6 +123,7 @@ struct MenuContent: View {
             }
             .help("Quit DiskCare")
         }
+        .buttonStyle(.borderless)
     }
 
     private func openMain(_ section: MainSection) {
