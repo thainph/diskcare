@@ -9,6 +9,8 @@ import UserNotifications
 @Observable
 final class AppModel {
     let settings: AppSettings
+    /// Scan history, 7-day growth and the live FSEvents growth watcher.
+    let growth = GrowthModel()
 
     private(set) var report: ScanReport?
     private(set) var dockerReport: DockerReport?
@@ -27,6 +29,10 @@ final class AppModel {
     init(settings: AppSettings) {
         self.settings = settings
         refreshFreeSpace()
+        // Persist the FSEvents position so changes made while the app is closed are replayed next launch.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.growth.stopWatching() }
+        }
     }
 
     var plan: [CleanupCandidate] {
@@ -60,6 +66,7 @@ final class AppModel {
             self.dockerReport = dockerReport
             lastScanAt = Date()
             refreshFreeSpace()
+            growth.didScan(fileReport, freeBytes: freeBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
             isScanning = false
             notifyIfLowOnSpace()
         }

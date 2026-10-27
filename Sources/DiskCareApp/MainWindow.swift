@@ -64,9 +64,11 @@ struct MainWindow: View {
         switch section {
         case .overview: OverviewView(model: model)
         case .projects: ProjectsView(model: model)
-        case .docker: DockerSummaryView(report: model.dockerReport)
-        case .caches, .growth, .doctor:
+        case .docker: DockerSummaryView(report: model.dockerReport, onFinished: { model.scan() })
+        case .caches:
             ContentUnavailableView(section.title, systemImage: section.systemImage, description: Text("Coming soon"))
+        case .growth: ScrollView { GrowthView(model: model.growth).padding(20) }
+        case .doctor: ScrollView { DoctorView(report: model.report).padding(20) }
         }
     }
 }
@@ -129,9 +131,10 @@ struct StatTile: View {
     }
 }
 
-/// Read-only Docker breakdown; cleanup actions are added by DockerCleanupView.
+/// Docker breakdown plus cleanup actions (DockerCleanupView).
 struct DockerSummaryView: View {
     let report: DockerReport?
+    var onFinished: () -> Void = {}
 
     var body: some View {
         ScrollView {
@@ -151,6 +154,9 @@ struct DockerSummaryView: View {
                             }
                         }
                         .padding(4)
+                    }
+                    GroupBox("Clean up") {
+                        DockerCleanupView(report: report, onFinished: onFinished).padding(4)
                     }
                     GroupBox("Unused volumes by project") {
                         VStack(spacing: 4) {

@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu bar only: no Dock icon even when launched as a bare executable.
         NSApp.setActivationPolicy(.accessory)
     }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
 }
 
 extension AppModel {
