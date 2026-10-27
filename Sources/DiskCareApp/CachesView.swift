@@ -33,18 +33,32 @@ final class CachesModel {
 
     var usesTrash: Bool { moveToTrash() }
 
-    func scan() {
+    func scan(priority: ScanPriority = .userInitiated) {
+        guard !isScanning, !isCleaning else { return }
+        Task { await refresh(priority: priority) }
+    }
+
+    /// Measures caches; awaitable so callers can sequence it after other scans.
+    func refresh(priority: ScanPriority) async {
         guard !isScanning, !isCleaning else { return }
         isScanning = true
-        Task {
-            let report = await CacheScanner.scan()
-            self.report = report
-            // Drop selections that no longer exist or are no longer cleanable.
-            selection = selection.filter { id in
-                if let entry = report.entry(id: id) { return entry.isCleanable }
-                return report.item(id: id).flatMap { report.entry(id: $0.entryID) }?.safety.isCleanable ?? false
-            }
-            isScanning = false
+        let report = await CacheScanner.scan(CacheScanner.Options(priority: priority))
+        apply(report)
+        isScanning = false
+    }
+
+    /// Shows a previously saved report (app launch) until the next scan finishes.
+    func restore(_ report: CacheReport) {
+        guard self.report == nil else { return }
+        apply(report)
+    }
+
+    private func apply(_ report: CacheReport) {
+        self.report = report
+        // Drop selections that no longer exist or are no longer cleanable.
+        selection = selection.filter { id in
+            if let entry = report.entry(id: id) { return entry.isCleanable }
+            return report.item(id: id).flatMap { report.entry(id: $0.entryID) }?.safety.isCleanable ?? false
         }
     }
 
@@ -77,7 +91,7 @@ final class CachesModel {
             selection.removeAll()
             isCleaning = false
             onCleaned?(result)
-            scan()
+            scan(priority: .background)
         }
     }
 }

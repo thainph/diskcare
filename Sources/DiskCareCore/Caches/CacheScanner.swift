@@ -9,14 +9,17 @@ public enum CacheScanner {
         public var resolver: CommandResolver
         public var now: Date
         public var workerCount: Int?
+        public var priority: ScanPriority
 
         public init(
             definitions: [CacheDefinition] = CacheCatalog.definitions(),
             home: String = NSHomeDirectory(),
             resolver: CommandResolver = .standard(),
             now: Date = Date(),
-            workerCount: Int? = nil
+            workerCount: Int? = nil,
+            priority: ScanPriority = .userInitiated
         ) {
+            self.priority = priority
             self.definitions = definitions
             self.home = home
             self.resolver = resolver
@@ -35,7 +38,7 @@ public enum CacheScanner {
 
         // Every cache root is excluded from the others, so nested locations
         // (~/Library/Caches vs ~/Library/Caches/Homebrew) are counted once.
-        var scanOptions = ScanOptions(roots: Array(claimed), excludedPaths: claimed, stayOnDevice: true)
+        var scanOptions = ScanOptions(roots: Array(claimed), excludedPaths: claimed, stayOnDevice: true, priority: options.priority)
         if let workers = options.workerCount { scanOptions.workerCount = workers }
         let tree = claimed.isEmpty ? nil : FileSystemScanner.scan(scanOptions)
         let index = TreeIndex(tree: tree, itemRoots: resolved.filter { $0.0.itemRule != nil }.flatMap(\.1))
@@ -65,6 +68,7 @@ public enum CacheScanner {
     public static func scan(_ options: Options = Options()) async -> CacheReport {
         await withCheckedContinuation { continuation in
             Thread.detachNewThread {
+                options.priority.applyToCurrentThread()
                 continuation.resume(returning: scan(options))
             }
         }

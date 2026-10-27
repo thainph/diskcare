@@ -20,11 +20,19 @@ public enum GitInspector {
     private static let baseBranchNames: Set<String> = ["main", "master", "develop"]
 
     /// Inspects repositories in parallel; results keep the input order.
-    public static func inspect(_ paths: [String]) -> [GitInfo?] {
+    /// `git status` walks the whole worktree, so concurrency is capped (tightly for background scans).
+    public static func inspect(_ paths: [String], priority: ScanPriority = .userInitiated) -> [GitInfo?] {
         let results = LockedArray<GitInfo?>(repeating: nil, count: paths.count)
-        DispatchQueue.concurrentPerform(iterations: paths.count) { index in
-            results[index] = inspect(paths[index])
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = priority == .background ? 2 : 6
+        queue.qualityOfService = priority.qualityOfService
+        for index in paths.indices {
+            queue.addOperation {
+                priority.applyToCurrentThread()
+                results[index] = inspect(paths[index])
+            }
         }
+        queue.waitUntilAllOperationsAreFinished()
         return results.values
     }
 
@@ -65,6 +73,8 @@ public enum GitInspector {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", directory] + arguments
+        // Children inherit the caller's priority (background scans spawn background git).
+        process.qualityOfService = Thread.current.qualityOfService
         // Read-only inspection must not take index.lock or touch the index.
         process.environment = ["GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C", "HOME": NSHomeDirectory()]
         let output = Pipe()

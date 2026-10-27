@@ -77,9 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppModel {
     /// First launch: permissions, schedule and an initial scan.
     func startOnce() {
-        guard lastScanAt == nil, !isScanning else { return }
+        guard !didStart else { return }
+        didStart = true
         requestNotificationPermission()
         startSchedule()
-        scan()
+        // Show the previous results instantly; refresh quietly in the background.
+        let age = restoreSnapshot()
+        if age == nil || age! > 15 * 60 {
+            scan(priority: .background)
+        }
     }
 }

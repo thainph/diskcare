@@ -1,25 +1,63 @@
 import Darwin
 import Foundation
 
+/// How aggressively a scan may use the machine.
+public enum ScanPriority: Sendable {
+    /// Periodic/automatic scans: few threads, background QoS and throttled disk I/O so the
+    /// user never notices. Slower, but the app is not waiting on it.
+    case background
+    /// The user explicitly asked (CLI, "Scan now"): use the machine.
+    case userInitiated
+
+    var qualityOfService: QualityOfService {
+        switch self {
+        case .background: .background
+        case .userInitiated: .userInitiated
+        }
+    }
+
+    /// Most of a scan's cost is kernel time in getattrlistbulk. Measured on ~1M files (APFS SSD):
+    /// 2 threads 12.5s / 8s CPU, 4 threads 5.5s / 8s CPU, 11 threads 4.0s / 22s CPU,
+    /// 22 threads 4.0s / 32s CPU. Beyond 4 threads only burns CPU, so stay there.
+    var defaultWorkerCount: Int {
+        switch self {
+        case .background: 2
+        case .userInitiated: 4
+        }
+    }
+
+    /// Applies QoS and the disk I/O policy to the current thread.
+    func applyToCurrentThread() {
+        Thread.current.qualityOfService = qualityOfService
+        if self == .background {
+            // Throttled I/O yields to every other process's disk access.
+            setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE)
+        }
+    }
+}
+
 public struct ScanOptions: Sendable {
     public var roots: [String]
     /// Absolute paths that are skipped together with their subtree.
     public var excludedPaths: Set<String>
-    /// Directory listing is I/O bound, so more workers than cores still helps.
+    /// Scanner threads; defaults from `priority`.
     public var workerCount: Int
     /// Do not cross into other volumes (network mounts, disk images, OrbStack NFS…).
     public var stayOnDevice: Bool
+    public var priority: ScanPriority
 
     public init(
         roots: [String],
         excludedPaths: Set<String> = [],
-        workerCount: Int = max(8, ProcessInfo.processInfo.activeProcessorCount * 2),
-        stayOnDevice: Bool = true
+        workerCount: Int? = nil,
+        stayOnDevice: Bool = true,
+        priority: ScanPriority = .userInitiated
     ) {
         self.roots = roots.map(Self.normalize)
         self.excludedPaths = Set(excludedPaths.map(Self.normalize))
-        self.workerCount = max(1, workerCount)
+        self.workerCount = max(1, workerCount ?? priority.defaultWorkerCount)
         self.stayOnDevice = stayOnDevice
+        self.priority = priority
     }
 
     public static func normalize(_ path: String) -> String {
@@ -49,12 +87,14 @@ public enum FileSystemScanner {
         let group = DispatchGroup()
         for worker in workers {
             group.enter()
+            let priority = options.priority
             let thread = Thread {
+                priority.applyToCurrentThread()
                 worker.run()
                 group.leave()
             }
             thread.stackSize = 1 << 20
-            thread.qualityOfService = .utility
+            thread.qualityOfService = priority.qualityOfService
             thread.start()
         }
         group.wait()
@@ -67,6 +107,7 @@ public enum FileSystemScanner {
     public static func scan(_ options: ScanOptions) async -> ScanTree {
         await withCheckedContinuation { continuation in
             Thread.detachNewThread {
+                options.priority.applyToCurrentThread()
                 continuation.resume(returning: scan(options))
             }
         }

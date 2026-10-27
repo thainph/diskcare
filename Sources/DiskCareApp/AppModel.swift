@@ -30,6 +30,7 @@ final class AppModel {
     var selectedSection: MainSection? = .overview
 
     private var scheduler: NSBackgroundActivityScheduler?
+    @ObservationIgnored var didStart = false
     private static let lastLowSpaceNotice = "lastLowSpaceNotice"
 
     init(settings: AppSettings) {
@@ -41,9 +42,60 @@ final class AppModel {
         }
     }
 
+    /// Memoized: SwiftUI reads the plan many times per render (lists, totals, sidebar badges).
     var plan: [CleanupCandidate] {
         guard let report else { return [] }
-        return CleanupPlanner.plan(report, criteria: settings.criteria)
+        let key = PlanKey(scannedAt: report.scannedAt, idleDays: settings.idleDays,
+                          minimumMB: settings.minimumArtifactMB, worktrees: settings.removeMergedWorktrees)
+        if let cached = planCache, cached.key == key { return cached.plan }
+        let plan = CleanupPlanner.plan(report, criteria: settings.criteria)
+        planCache = (key, plan)
+        return plan
+    }
+
+    private struct PlanKey: Equatable {
+        let scannedAt: Date
+        let idleDays: Int
+        let minimumMB: Int
+        let worktrees: Bool
+    }
+
+    @ObservationIgnored private var planCache: (key: PlanKey, plan: [CleanupCandidate])?
+
+    // MARK: Snapshot
+
+    /// Last results, restored at launch so the UI is useful immediately without a full rescan.
+    private struct Snapshot: Codable {
+        var report: ScanReport?
+        var docker: DockerReport?
+        var caches: CacheReport?
+    }
+
+    private static var snapshotURL: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/DiskCare/last-scan.json")
+    }
+
+    private func saveSnapshot() {
+        let snapshot = Snapshot(report: report, docker: dockerReport, caches: caches.report)
+        let url = Self.snapshotURL
+        Task.detached(priority: .background) {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? JSONEncoder().encode(snapshot).write(to: url, options: .atomic)
+        }
+    }
+
+    /// Returns the age of the restored data, or nil when nothing was saved.
+    @discardableResult
+    func restoreSnapshot() -> TimeInterval? {
+        guard let data = try? Data(contentsOf: Self.snapshotURL),
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
+        report = snapshot.report
+        dockerReport = snapshot.docker
+        if let caches = snapshot.caches { self.caches.restore(caches) }
+        lastScanAt = snapshot.report?.scannedAt
+        if let report { growth.startWatching(report) }
+        return lastScanAt.map { Date().timeIntervalSince($0) }
     }
 
     var selectedPlan: [CleanupCandidate] {
@@ -79,23 +131,31 @@ final class AppModel {
 
     // MARK: Scanning
 
-    func scan() {
+    /// Starts a scan. Automatic scans use `.background` (few threads, throttled disk I/O) so the Mac
+    /// stays responsive; an explicit "Scan now" uses `.userInitiated`.
+    func scan(priority: ScanPriority = .userInitiated) {
+        guard !isScanning, !isCleaning else { return }
+        Task { await performScan(priority: priority) }
+    }
+
+    func performScan(priority: ScanPriority) async {
         guard !isScanning, !isCleaning else { return }
         isScanning = true
-        caches.scan()
-        let options = ScanOptions(roots: settings.roots)
-        Task {
-            async let files = DiskAnalyzer.analyze(options)
-            async let docker = DockerScanner.scan()
-            let (fileReport, dockerReport) = await (files, docker)
-            report = fileReport
-            self.dockerReport = dockerReport
-            lastScanAt = Date()
-            refreshFreeSpace()
-            growth.didScan(fileReport, freeBytes: freeBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
-            isScanning = false
-            notifyIfLowOnSpace()
-        }
+        let options = ScanOptions(roots: settings.roots, priority: priority)
+        // Docker is a cheap API call; the two filesystem scans run one after the other, never together.
+        async let docker = DockerScanner.scan()
+        let fileReport = await DiskAnalyzer.analyze(options)
+        let dockerReport = await docker
+        report = fileReport
+        self.dockerReport = dockerReport
+        lastScanAt = Date()
+        refreshFreeSpace()
+        growth.didScan(fileReport, freeBytes: freeBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
+        isScanning = false
+        notifyIfLowOnSpace()
+
+        await caches.refresh(priority: priority)
+        saveSnapshot()
     }
 
     func refreshFreeSpace() {
@@ -111,10 +171,10 @@ final class AppModel {
         scheduler.repeats = true
         scheduler.interval = TimeInterval(max(1, settings.scanIntervalHours) * 3600)
         scheduler.tolerance = scheduler.interval / 4
-        scheduler.qualityOfService = .utility
+        scheduler.qualityOfService = .background
         scheduler.schedule { [weak self] completion in
             Task { @MainActor in
-                self?.scan()
+                await self?.performScan(priority: .background)
                 completion(.finished)
             }
         }
@@ -148,7 +208,7 @@ final class AppModel {
             lastCleanupMessage = message
             isCleaning = false
             deselected.removeAll()
-            scan()
+            scan(priority: .background)
         }
     }
 

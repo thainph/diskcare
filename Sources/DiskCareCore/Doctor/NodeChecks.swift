@@ -74,7 +74,7 @@ public struct NpmToPnpmCheck: DoctorCheck {
 
     private func storeSize(_ path: String) -> Int64? {
         guard FileManager.default.fileExists(atPath: path) else { return nil }
-        return FileSystemScanner.scan(ScanOptions(roots: [path])).stats.bytes
+        return FileSystemScanner.scan(ScanOptions(roots: [path], priority: .background)).stats.bytes
     }
 }
 

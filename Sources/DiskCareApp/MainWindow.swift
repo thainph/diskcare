@@ -246,7 +246,7 @@ struct DockerPage: View {
                         if report.safeReclaimableBytes == 0 {
                             Text("Nothing to remove right now.").foregroundStyle(.secondary)
                         } else {
-                            DockerCleanupView(report: report, scope: .safe, onFinished: { model.scan() })
+                            DockerCleanupView(report: report, scope: .safe, onFinished: { model.scan(priority: .background) })
                         }
                     }
                     if report.dataVolumeBytes > 0 {
@@ -254,7 +254,7 @@ struct DockerPage: View {
                             Text("No container uses these volumes, but they can hold databases of old projects. Each volume is archived to ~/DiskCareBackups before it is deleted and can be restored later.")
                                 .font(.caption).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
-                            DockerCleanupView(report: report, scope: .dataVolumes, onFinished: { model.scan() })
+                            DockerCleanupView(report: report, scope: .dataVolumes, onFinished: { model.scan(priority: .background) })
                         }
                     }
                     Card(title: "Disk usage", systemImage: "chart.bar") {

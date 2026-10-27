@@ -287,7 +287,7 @@ public final class GrowthWatcher: @unchecked Sendable {
 
     /// Re-measures one artifact subtree with the bulk scanner.
     static func measure(_ path: String) -> Int64 {
-        let tree = FileSystemScanner.scan(ScanOptions(roots: [path], workerCount: 4))
+        let tree = FileSystemScanner.scan(ScanOptions(roots: [path], workerCount: 2, priority: .background))
         return tree.stats.bytes
     }
 
