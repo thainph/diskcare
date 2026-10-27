@@ -21,7 +21,8 @@ public enum ScanPriority: Sendable {
     /// 22 threads 4.0s / 32s CPU. Beyond 4 threads only burns CPU, so stay there.
     var defaultWorkerCount: Int {
         switch self {
-        case .background: 2
+        // Automatic scans favour a quiet machine over speed; the UI shows progress meanwhile.
+        case .background: 1
         case .userInitiated: 4
         }
     }
@@ -45,14 +46,18 @@ public struct ScanOptions: Sendable {
     /// Do not cross into other volumes (network mounts, disk images, OrbStack NFS…).
     public var stayOnDevice: Bool
     public var priority: ScanPriority
+    /// Optional live counters for UI progress.
+    public var progress: ScanProgress?
 
     public init(
         roots: [String],
         excludedPaths: Set<String> = [],
         workerCount: Int? = nil,
         stayOnDevice: Bool = true,
-        priority: ScanPriority = .userInitiated
+        priority: ScanPriority = .userInitiated,
+        progress: ScanProgress? = nil
     ) {
+        self.progress = progress
         self.roots = roots.map(Self.normalize)
         self.excludedPaths = Set(excludedPaths.map(Self.normalize))
         self.workerCount = max(1, workerCount ?? priority.defaultWorkerCount)
@@ -285,6 +290,7 @@ final class Worker: @unchecked Sendable {
                 }
                 if status != 0 { stats.errors += 1 }
                 stats.files += totals.files
+                options.progress?.addDirectory(files: Int(totals.files))
             }
         }
 

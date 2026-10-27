@@ -13,6 +13,14 @@ enum SnapshotDebug {
     @MainActor
     static func run(model: AppModel, openMain: () -> Void) async {
         guard let directory else { return }
+        // Popover while a scan is running (status UI).
+        while model.scanStatus == nil { try? await Task.sleep(for: .milliseconds(200)) }
+        try? await Task.sleep(for: .seconds(2))
+        let scanning = NSHostingView(rootView: MenuContent(model: model))
+        scanning.frame = NSRect(origin: .zero, size: scanning.fittingSize)
+        scanning.layoutSubtreeIfNeeded()
+        save(view: scanning, to: "\(directory)/popover-scanning.png")
+
         while model.report == nil || model.isScanning || model.caches.report == nil {
             try? await Task.sleep(for: .milliseconds(500))
         }

@@ -21,15 +21,17 @@ public enum GitInspector {
 
     /// Inspects repositories in parallel; results keep the input order.
     /// `git status` walks the whole worktree, so concurrency is capped (tightly for background scans).
-    public static func inspect(_ paths: [String], priority: ScanPriority = .userInitiated) -> [GitInfo?] {
+    public static func inspect(_ paths: [String], priority: ScanPriority = .userInitiated, progress: ScanProgress? = nil) -> [GitInfo?] {
         let results = LockedArray<GitInfo?>(repeating: nil, count: paths.count)
+        progress?.startGit(total: paths.count)
         let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = priority == .background ? 2 : 6
+        queue.maxConcurrentOperationCount = priority == .background ? 1 : 4
         queue.qualityOfService = priority.qualityOfService
         for index in paths.indices {
             queue.addOperation {
                 priority.applyToCurrentThread()
                 results[index] = inspect(paths[index])
+                progress?.finishGitRepository()
             }
         }
         queue.waitUntilAllOperationsAreFinished()

@@ -4,7 +4,7 @@ import Foundation
 public enum DiskAnalyzer {
     public static func analyze(_ options: ScanOptions, inspectGit: Bool = true) -> ScanReport {
         let tree = FileSystemScanner.scan(options)
-        return report(from: tree, inspectGit: inspectGit, priority: options.priority)
+        return report(from: tree, inspectGit: inspectGit, priority: options.priority, progress: options.progress)
     }
 
     public static func analyze(_ options: ScanOptions, inspectGit: Bool = true) async -> ScanReport {
@@ -16,7 +16,7 @@ public enum DiskAnalyzer {
         }
     }
 
-    static func report(from tree: ScanTree, inspectGit: Bool, priority: ScanPriority = .userInitiated) -> ScanReport {
+    static func report(from tree: ScanTree, inspectGit: Bool, priority: ScanPriority = .userInitiated, progress: ScanProgress? = nil) -> ScanReport {
         let nodes = tree.nodes
         // Nearest enclosing workspace for every node; parents come first, so one forward pass suffices.
         var workspaceOf = [Int32](repeating: -1, count: nodes.count)
@@ -64,7 +64,7 @@ public enum DiskAnalyzer {
 
         let gitClock = ContinuousClock.now
         if inspectGit {
-            let infos = GitInspector.inspect(workspaces.map(\.path), priority: priority)
+            let infos = GitInspector.inspect(workspaces.map(\.path), priority: priority, progress: progress)
             for index in workspaces.indices { workspaces[index].git = infos[index] }
         }
         let gitDuration = (ContinuousClock.now - gitClock).seconds

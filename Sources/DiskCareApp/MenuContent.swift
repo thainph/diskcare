@@ -54,12 +54,14 @@ struct MenuContent: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("You can free up").font(.headline)
                 Spacer()
-                if model.isScanning {
-                    ProgressView().controlSize(.small)
-                    Text("Scanning…").font(.caption).foregroundStyle(.secondary)
+                if model.report == nil && model.isScanning {
+                    Text("Calculating…").font(.headline).foregroundStyle(.secondary)
                 } else {
                     Text(ByteFormat.string(model.reclaimableTotal)).font(.headline).monospacedDigit()
                 }
+            }
+            if let status = model.scanStatus {
+                ScanStatusView(status: status, compact: true)
             }
             ForEach(model.reclaimable, id: \.0) { source, bytes in
                 Button {
@@ -71,7 +73,7 @@ struct MenuContent: View {
                             .frame(width: 18)
                         Text(source.title)
                         Spacer()
-                        Text(bytes > 0 ? ByteFormat.string(bytes) : "—")
+                        Text(model.valueText(for: source, bytes: bytes))
                             .monospacedDigit()
                             .foregroundStyle(bytes > 0 ? .primary : .secondary)
                         Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)

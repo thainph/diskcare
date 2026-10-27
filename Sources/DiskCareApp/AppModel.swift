@@ -115,6 +115,21 @@ final class AppModel {
 
     var reclaimableTotal: Int64 { reclaimable.reduce(0) { $0 + $1.1 } }
 
+    /// Size label for a source, or why there is no number yet.
+    func valueText(for source: SpaceSource, bytes: Int64, empty: String = "—") -> String {
+        if bytes > 0 { return ByteFormat.string(bytes) }
+        switch source {
+        case .projects where report == nil, .caches where caches.report == nil:
+            return isScanning ? "pending" : "not scanned"
+        case .docker where dockerReport == nil:
+            return isScanning ? "pending" : "not scanned"
+        case .docker where dockerReport?.available == false:
+            return "not running"
+        default:
+            return empty
+        }
+    }
+
     func selectAllPlan() { deselected.removeAll() }
 
     func selectNoPlan() { deselected = Set(plan.map(\.path)) }
@@ -138,24 +153,75 @@ final class AppModel {
         Task { await performScan(priority: priority) }
     }
 
+    /// What a running scan is doing, for the progress UI.
+    struct ScanStatus: Equatable {
+        var step: Int
+        var totalSteps: Int
+        var title: String
+        var detail: String = ""
+
+        var fraction: Double { Double(step - 1) / Double(max(1, totalSteps)) }
+    }
+
+    private(set) var scanStatus: ScanStatus?
+
+    /// Scans step by step — each root, then Docker, then caches — never several at once.
+    /// The UI updates after every root, keeping the previous results for roots not rescanned yet.
     func performScan(priority: ScanPriority) async {
         guard !isScanning, !isCleaning else { return }
         isScanning = true
-        let options = ScanOptions(roots: settings.roots, priority: priority)
-        // Docker is a cheap API call; the two filesystem scans run one after the other, never together.
-        async let docker = DockerScanner.scan()
-        let fileReport = await DiskAnalyzer.analyze(options)
-        let dockerReport = await docker
-        report = fileReport
+        let roots = settings.roots.map(ScanOptions.normalize).filter { FileManager.default.fileExists(atPath: $0) }
+        let totalSteps = roots.count + 2
+        let progress = ScanProgress()
+        let ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.refreshStatusDetail(progress)
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+        defer {
+            ticker.cancel()
+            scanStatus = nil
+            isScanning = false
+        }
+
+        var fresh: [ScanReport] = []
+        for (index, root) in roots.enumerated() {
+            scanStatus = ScanStatus(step: index + 1, totalSteps: totalSteps, title: "Scanning \(root.abbreviatingHome)")
+            progress.reset()
+            let rootReport = await DiskAnalyzer.analyze(ScanOptions(roots: [root], priority: priority, progress: progress))
+            fresh.append(rootReport)
+            report = report?.replacing(root: root, with: rootReport) ?? rootReport
+        }
+        if let combined = ScanReport.combining(fresh) { report = combined }
+
+        scanStatus = ScanStatus(step: roots.count + 1, totalSteps: totalSteps, title: "Checking Docker")
+        let dockerReport = await DockerScanner.scan()
         self.dockerReport = dockerReport
         lastScanAt = Date()
         refreshFreeSpace()
-        growth.didScan(fileReport, freeBytes: freeBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
-        isScanning = false
+        if let report {
+            growth.didScan(report, freeBytes: freeBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
+        }
         notifyIfLowOnSpace()
 
-        await caches.refresh(priority: priority)
+        scanStatus = ScanStatus(step: roots.count + 2, totalSteps: totalSteps, title: "Measuring developer caches")
+        progress.reset()
+        await caches.refresh(priority: priority, progress: progress)
         saveSnapshot()
+    }
+
+    private func refreshStatusDetail(_ progress: ScanProgress) {
+        guard var status = scanStatus else { return }
+        let git = progress.gitInspected
+        if git.total > 0 {
+            status.detail = "git status \(git.done) of \(git.total) repositories"
+        } else if progress.files > 0 {
+            status.detail = "\(progress.files.formatted()) files"
+        } else {
+            status.detail = ""
+        }
+        if status != scanStatus { scanStatus = status }
     }
 
     func refreshFreeSpace() {

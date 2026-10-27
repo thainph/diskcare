@@ -60,7 +60,9 @@ struct MainWindow: View {
                 .navigationTitle("DiskCare")
                 .toolbar {
                     ToolbarItemGroup {
-                        if model.isScanning {
+                        if let status = model.scanStatus {
+                            Text("\(status.title) (\(status.step)/\(status.totalSteps))")
+                                .font(.caption).foregroundStyle(.secondary)
                             ProgressView().controlSize(.small)
                         }
                         Button {
@@ -123,6 +125,9 @@ struct OverviewView: View {
                 title: "Overview",
                 subtitle: "How your startup disk is used and how much DiskCare can safely free."
             )
+            if let status = model.scanStatus {
+                Card { ScanStatusView(status: status) }
+            }
             if model.isLowOnSpace {
                 StatusBanner(message: "Free space is below your \(model.settings.lowSpaceThresholdGB) GB warning threshold. Start with the largest item below.", isError: true)
             }
@@ -165,8 +170,7 @@ struct OverviewView: View {
                 Text(ByteFormat.string(model.reclaimableTotal)).font(.headline).monospacedDigit()
                 Spacer()
                 if model.isScanning {
-                    ProgressView().controlSize(.small)
-                    Text("Scanning…").font(.caption).foregroundStyle(.secondary)
+                    Text("updating…").font(.caption).foregroundStyle(.secondary)
                 }
             }
             ForEach(sortedSources, id: \.0) { source, bytes in
@@ -181,7 +185,7 @@ struct OverviewView: View {
                         Text(source.explanation).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(bytes > 0 ? ByteFormat.string(bytes) : "Nothing to free")
+                    Text(bytes > 0 ? ByteFormat.string(bytes) : model.valueText(for: source, bytes: bytes, empty: "Nothing to free"))
                         .font(bytes > 0 ? .title3.weight(.semibold) : .callout)
                         .foregroundStyle(bytes > 0 ? .primary : .secondary)
                         .monospacedDigit()

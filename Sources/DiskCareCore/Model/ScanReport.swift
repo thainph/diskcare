@@ -65,3 +65,41 @@ public struct ScanReport: Sendable, Codable {
             .sorted { $0.bytes > $1.bytes }
     }
 }
+
+extension ScanReport {
+    /// Replaces everything under `root` with a fresh single-root report, keeping the other roots'
+    /// (older) results. Lets the app scan roots one by one and update the UI progressively.
+    public func replacing(root: String, with fresh: ScanReport) -> ScanReport {
+        let prefix = root == "/" ? "/" : root + "/"
+        func isUnder(_ path: String) -> Bool { path == root || path.hasPrefix(prefix) }
+        // Interim result: stats stay those of the last complete pass (see `combining`).
+        return ScanReport(
+            roots: Array(Set(roots + fresh.roots)).sorted(),
+            scannedAt: fresh.scannedAt,
+            stats: stats,
+            gitDurationSeconds: gitDurationSeconds + fresh.gitDurationSeconds,
+            artifacts: (artifacts.filter { !isUnder($0.path) } + fresh.artifacts).sorted { $0.totals.bytes > $1.totals.bytes },
+            workspaces: (workspaces.filter { !isUnder($0.path) } + fresh.workspaces).sorted { $0.artifactBytes > $1.artifactBytes }
+        )
+    }
+
+    /// Combines single-root reports from one scan pass.
+    public static func combining(_ reports: [ScanReport]) -> ScanReport? {
+        guard var combined = reports.first else { return nil }
+        for report in reports.dropFirst() {
+            var stats = combined.stats
+            stats.add(report.stats)
+            stats.bytes += report.stats.bytes
+            stats.durationSeconds += report.stats.durationSeconds
+            combined = ScanReport(
+                roots: combined.roots + report.roots,
+                scannedAt: report.scannedAt,
+                stats: stats,
+                gitDurationSeconds: combined.gitDurationSeconds + report.gitDurationSeconds,
+                artifacts: (combined.artifacts + report.artifacts).sorted { $0.totals.bytes > $1.totals.bytes },
+                workspaces: (combined.workspaces + report.workspaces).sorted { $0.artifactBytes > $1.artifactBytes }
+            )
+        }
+        return combined
+    }
+}

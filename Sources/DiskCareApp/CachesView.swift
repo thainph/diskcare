@@ -39,10 +39,10 @@ final class CachesModel {
     }
 
     /// Measures caches; awaitable so callers can sequence it after other scans.
-    func refresh(priority: ScanPriority) async {
+    func refresh(priority: ScanPriority, progress: ScanProgress? = nil) async {
         guard !isScanning, !isCleaning else { return }
         isScanning = true
-        let report = await CacheScanner.scan(CacheScanner.Options(priority: priority))
+        let report = await CacheScanner.scan(CacheScanner.Options(priority: priority, progress: progress))
         apply(report)
         isScanning = false
     }

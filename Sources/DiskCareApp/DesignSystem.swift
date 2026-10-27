@@ -233,3 +233,28 @@ extension DockerReport {
         unusedVolumeGroups.filter { !$0.isAnonymous }.reduce(Int64(0)) { $0 + $1.bytes }
     }
 }
+
+/// Step-by-step scan progress: "Step 2 of 5 · Scanning ~/Workspace · 412,000 files".
+struct ScanStatusView: View {
+    let status: AppModel.ScanStatus
+    var compact = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ProgressView(value: status.fraction)
+                .progressViewStyle(.linear)
+                .animation(.easeOut(duration: 0.25), value: status.fraction)
+            HStack(spacing: 4) {
+                Text(status.title).lineLimit(1).truncationMode(.middle)
+                if !status.detail.isEmpty {
+                    Text("· \(status.detail)").foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text("\(status.step)/\(status.totalSteps)").foregroundStyle(.tertiary).monospacedDigit()
+            }
+            .font(compact ? .caption : .callout)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Scan step \(status.step) of \(status.totalSteps): \(status.title)")
+    }
+}
