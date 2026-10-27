@@ -30,9 +30,11 @@ public enum DiskAnalyzer {
         for node in nodes {
             guard let kind = node.artifact, kind.isRegenerable, node.total.bytes > 0 else { continue }
             let workspace = workspaceOf[Int(node.id)]
+            let owner = node.parent >= 0 ? nodes[Int(node.parent)].latestSourceModification : 0
             artifacts.append(ArtifactEntry(
                 path: node.path, kind: kind, totals: node.total,
-                workspacePath: workspace >= 0 ? nodes[Int(workspace)].path : nil
+                workspacePath: workspace >= 0 ? nodes[Int(workspace)].path : nil,
+                projectLastChangeAt: owner > 0 ? Date(timeIntervalSince1970: TimeInterval(owner)) : nil
             ))
             // Credit the artifact to every enclosing workspace (nested repos included).
             var current = workspace

@@ -39,9 +39,17 @@ public enum ArtifactKind: String, Codable, Sendable, CaseIterable {
 }
 
 enum ArtifactRules {
+    private static let vendoredSegments = ["/third_party/", "/third-party/", "/thirdparty/", "/external/"]
+
+    /// Whether a path lies inside bundled third-party code, where `build`/`dist`… may be shipped content.
+    static func isVendored(_ path: String) -> Bool {
+        vendoredSegments.contains { path.contains($0) }
+    }
+
     /// Classifies a child directory using the markers of its parent directory.
-    /// Ambiguous names (build, dist, target, vendor, venv…) require a matching marker.
-    static func classify(directoryName name: String, parentMarkers markers: ProjectMarkers) -> ArtifactKind? {
+    /// Ambiguous names (build, dist, target, vendor, venv…) require a matching marker
+    /// and are never matched inside vendored third-party code.
+    static func classify(directoryName name: String, parentMarkers markers: ProjectMarkers, vendored: Bool = false) -> ArtifactKind? {
         switch name {
         case "node_modules": return .nodeModules
         case ".git": return .gitMetadata
@@ -56,6 +64,7 @@ enum ArtifactRules {
         case "DerivedData": return .xcodeDerivedData
         default: break
         }
+        if vendored { return nil }
         switch name {
         case "target" where markers.contains(.cargoToml): return .cargoTarget
         case "venv" where markers.contains(.pythonProject): return .pythonVenv

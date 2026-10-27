@@ -3,6 +3,8 @@ import Foundation
 public struct GitInfo: Sendable, Codable, Equatable {
     public var branch: String?
     public var lastCommitAt: Date?
+    /// Last time HEAD moved (commit, checkout, reset…), from the mtime of the HEAD reflog.
+    public var lastHeadMoveAt: Date?
     /// Number of `git status --porcelain` lines (modified + untracked, ignored files excluded).
     public var uncommittedChanges: Int
     /// First base ref that already contains HEAD (e.g. `origin/develop`). Squash merges are not detected.
@@ -40,7 +42,13 @@ public enum GitInspector {
                 ref != branch && run(path, ["merge-base", "--is-ancestor", "HEAD", ref]) != nil
             }
         }
-        return GitInfo(branch: branch, lastCommitAt: lastCommit, uncommittedChanges: changes, mergedInto: mergedInto)
+        let lastHeadMove = run(path, ["rev-parse", "--absolute-git-dir"]).flatMap { gitDir in
+            (try? FileManager.default.attributesOfItem(atPath: gitDir + "/logs/HEAD"))?[.modificationDate] as? Date
+        }
+        return GitInfo(
+            branch: branch, lastCommitAt: lastCommit, lastHeadMoveAt: lastHeadMove,
+            uncommittedChanges: changes, mergedInto: mergedInto
+        )
     }
 
     /// Main repository of a linked worktree, read from its `.git` file (`gitdir: <repo>/.git/worktrees/<name>`).

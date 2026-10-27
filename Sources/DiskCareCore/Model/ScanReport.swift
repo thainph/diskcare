@@ -7,6 +7,8 @@ public struct ArtifactEntry: Sendable, Codable, Identifiable {
     public let totals: Totals
     /// Enclosing git repository or worktree, if any.
     public let workspacePath: String?
+    /// Latest source change in the directory that owns the artifact (used when there is no workspace).
+    public let projectLastChangeAt: Date?
 }
 
 public enum WorkspaceKind: String, Sendable, Codable {
@@ -25,9 +27,12 @@ public struct WorkspaceEntry: Sendable, Codable, Identifiable {
     public let lastSourceChangeAt: Date?
     public var git: GitInfo?
 
-    /// Latest of last commit and last source-file change.
+    /// Last human activity. For git workspaces file mtimes are noisy (checkout, `terraform init`,
+    /// IDE metadata), so only commits/checkouts count, plus file changes when the tree is dirty.
     public var lastActivityAt: Date? {
-        [git?.lastCommitAt, lastSourceChangeAt].compactMap { $0 }.max()
+        guard let git else { return lastSourceChangeAt }
+        let dirtyChange = git.uncommittedChanges > 0 ? lastSourceChangeAt : nil
+        return [git.lastCommitAt, git.lastHeadMoveAt, dirtyChange].compactMap { $0 }.max() ?? lastSourceChangeAt
     }
 
     public func idleDays(now: Date = Date()) -> Int? {

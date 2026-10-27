@@ -18,7 +18,7 @@ struct ReportPrinter {
         Regenerable artifacts: \(ByteFormat.string(report.regenerableBytes)) in \(report.artifacts.count) dirs
         """)
 
-        table(
+        TablePrinter.print(
             headers: ["KIND", "COUNT", "SIZE", "RESTORE"],
             rows: report.kindSummaries.map { [$0.kind.rawValue, "\($0.count)", ByteFormat.string($0.bytes), $0.kind.restoreHint] },
             rightAligned: [1, 2]
@@ -26,7 +26,7 @@ struct ReportPrinter {
 
         let workspaces = report.workspaces.filter { $0.artifactBytes >= minimumBytes }.prefix(top)
         Swift.print("\nTop workspaces by reclaimable artifacts")
-        table(
+        TablePrinter.print(
             headers: ["ARTIFACTS", "IDLE", "TYPE", "STATE", "BRANCH", "PATH"],
             rows: workspaces.map { workspace in
                 [
@@ -43,7 +43,7 @@ struct ReportPrinter {
 
         let artifacts = report.artifacts.filter { $0.totals.bytes >= minimumBytes }.prefix(top)
         Swift.print("\nTop artifacts")
-        table(
+        TablePrinter.print(
             headers: ["SIZE", "LINKED", "KIND", "PATH"],
             rows: artifacts.map {
                 [
@@ -63,8 +63,10 @@ struct ReportPrinter {
         if let merged = git.mergedInto { parts.append("merged→\(merged)") }
         return parts.joined(separator: " ")
     }
+}
 
-    private func table(headers: [String], rows: [[String]], rightAligned: Set<Int>) {
+enum TablePrinter {
+    static func print(headers: [String], rows: [[String]], rightAligned: Set<Int>) {
         guard !rows.isEmpty else {
             Swift.print("  (none)")
             return

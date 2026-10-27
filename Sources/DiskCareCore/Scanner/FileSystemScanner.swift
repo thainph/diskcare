@@ -264,6 +264,7 @@ final class Worker: @unchecked Sendable {
 
     private func children(of job: Job, names: [String], markers: ProjectMarkers) -> [Job] {
         let prefix = job.path == "/" ? "/" : job.path + "/"
+        let vendored = job.rollup < 0 && ArtifactRules.isVendored(prefix)
         var jobs: [Job] = []
         jobs.reserveCapacity(names.count)
         for name in names {
@@ -272,7 +273,7 @@ final class Worker: @unchecked Sendable {
             if job.rollup >= 0 {
                 jobs.append(Job(path: path, parent: -1, artifact: nil, rollup: job.rollup, device: job.device, needsNode: false))
             } else {
-                let kind = ArtifactRules.classify(directoryName: name, parentMarkers: markers)
+                let kind = ArtifactRules.classify(directoryName: name, parentMarkers: markers, vendored: vendored)
                 jobs.append(Job(path: path, parent: job.id, artifact: kind, rollup: -1, device: job.device, needsNode: true))
             }
         }
