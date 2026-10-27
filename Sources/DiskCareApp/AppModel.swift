@@ -19,6 +19,7 @@ final class AppModel {
     private(set) var lastCleanupMessage: String?
     /// Plan items the user unchecked; kept across rescans by path.
     var deselected: Set<String> = []
+    var selectedSection: MainSection? = .overview
 
     private var scheduler: NSBackgroundActivityScheduler?
     private static let lastLowSpaceNotice = "lastLowSpaceNotice"

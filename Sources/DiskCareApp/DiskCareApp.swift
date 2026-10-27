@@ -17,10 +17,17 @@ struct DiskCareApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("DiskCare", id: MainWindow.windowID) {
+            MainWindow(model: model)
+        }
+        .defaultSize(width: 980, height: 680)
+        .defaultLaunchBehavior(.suppressed)
+
         Window("DiskCare Settings", id: SettingsView.windowID) {
             SettingsView(settings: model.settings, onChange: { model.startSchedule() })
         }
         .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
     }
 }
 
