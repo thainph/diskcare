@@ -7,6 +7,7 @@ struct DiskCareCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "diskcare",
         abstract: "Find and clean disk space wasted by build artifacts, dependencies and stale worktrees.",
+        version: DiskCareVersion.current,
         subcommands: [Scan.self, Clean.self, Caches.self, Docker.self, History.self, Watch.self, DoctorCommand.self],
         defaultSubcommand: Scan.self
     )

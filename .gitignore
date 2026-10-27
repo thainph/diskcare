@@ -11,3 +11,4 @@ DerivedData/
 .devdy/
 .agents/
 AGENTS.md
+/dist/

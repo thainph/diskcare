@@ -1,0 +1,118 @@
+name: Release
+
+# Push a tag like v0.1.0 to build DiskCare.app for Apple silicon and publish a GitHub release.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish (arm64)
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      ARCH: arm64
+      # Optional Developer ID signing + notarization. Without these the app is ad-hoc signed.
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}               # base64 .p12
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}           # "Developer ID Application: Name (TEAMID)"
+      NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+      NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+      NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}                   # app-specific password
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Check tag matches DiskCareVersion
+        run: |
+          VERSION="${TAG#v}"
+          CODE_VERSION="$(sed -n 's/.*current = "\(.*\)".*/\1/p' Sources/DiskCareCore/Support/Version.swift)"
+          echo "tag=$VERSION code=$CODE_VERSION"
+          test "$VERSION" = "$CODE_VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: swift test
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          echo "SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build DiskCare.app
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/bundle-app.sh
+
+      - name: Notarize
+        if: env.MACOS_CERTIFICATE != '' && env.NOTARY_APPLE_ID != ''
+        run: |
+          ditto -c -k --keepParent .build/DiskCare.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --wait
+          xcrun stapler staple .build/DiskCare.app
+
+      - name: Package
+        run: scripts/package-release.sh
+
+      - name: Release notes
+        run: |
+          # Section of CHANGELOG.md for this version (between its heading and the next one).
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[?"v"\\]?" {found=1; next}
+            found && /^## / {exit}
+            found {print}
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            cat >> "$RUNNER_TEMP/notes.md" <<'NOTE'
+
+          ### Install
+          This build is ad-hoc signed (not notarized). After moving DiskCare.app to /Applications, run once:
+          ```
+          xattr -dr com.apple.quarantine /Applications/DiskCare.app
+          ```
+          or right-click the app → Open.
+          NOTE
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "DiskCare $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+              $([[ "$VERSION" == 0.* ]] && echo --prerelease)
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiskCare-${{ env.VERSION }}-arm64
+          path: dist/*
