@@ -7,7 +7,7 @@ struct DiskCareCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "diskcare",
         abstract: "Find and clean disk space wasted by build artifacts, dependencies and stale worktrees.",
-        subcommands: [Scan.self, Clean.self, Docker.self],
+        subcommands: [Scan.self, Clean.self, Docker.self, History.self, Watch.self],
         defaultSubcommand: Scan.self
     )
 }
@@ -68,9 +68,22 @@ struct Scan: ParsableCommand {
     @Flag(name: .long, help: "Print the full report as JSON.")
     var json = false
 
+    @Flag(name: .long, help: "Do not record this scan in the history database.")
+    var noRecord = false
+
+    @Option(name: .long, help: ArgumentHelp("History database path.", visibility: .hidden))
+    var database: String = HistoryStore.defaultPath
+
     func run() throws {
         let minimum = try parseSize(minSize)
         let report = DiskAnalyzer.analyze(scan.options, inspectGit: !noGit)
+        if !noRecord {
+            do {
+                try HistoryStore(path: database).record(report: report, freeBytes: Cleaner.availableCapacity(at: NSHomeDirectory()))
+            } catch {
+                FileHandle.standardError.write(Data("warning: could not record scan history: \(error)\n".utf8))
+            }
+        }
         if json {
             try printJSON(report)
         } else {
