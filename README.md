@@ -51,8 +51,8 @@ protected folders can be measured. Choose which folders to scan in **Settings** 
 ### CLI only
 
 ```bash
-curl -LO https://github.com/thainph/diskcare/releases/latest/download/diskcare-cli-0.1.0-arm64.tar.gz
-tar -xzf diskcare-cli-0.1.0-arm64.tar.gz && sudo mv diskcare /usr/local/bin/
+curl -LO https://github.com/thainph/diskcare/releases/latest/download/diskcare-cli-0.1.1-arm64.tar.gz
+tar -xzf diskcare-cli-0.1.1-arm64.tar.gz && sudo mv diskcare /usr/local/bin/
 ```
 
 The CLI is also inside the app: `/Applications/DiskCare.app/Contents/Resources/diskcare`.
