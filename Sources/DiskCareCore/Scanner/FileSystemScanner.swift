@@ -22,7 +22,7 @@ public struct ScanOptions: Sendable {
         self.stayOnDevice = stayOnDevice
     }
 
-    static func normalize(_ path: String) -> String {
+    public static func normalize(_ path: String) -> String {
         let standardized = (path as NSString).expandingTildeInPath
         let resolved = URL(fileURLWithPath: standardized).standardizedFileURL.path
         return resolved.count > 1 && resolved.hasSuffix("/") ? String(resolved.dropLast()) : resolved
