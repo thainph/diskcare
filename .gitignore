@@ -1,0 +1,13 @@
+.DS_Store
+/.build/
+/.swiftpm/
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# Local AI tooling / workspace (never commit)
+.workspace/
+.claude/
+.codex/
+.devdy/
+.agents/
+AGENTS.md
