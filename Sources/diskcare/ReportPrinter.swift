@@ -63,23 +63,4 @@ struct ReportPrinter {
         if let merged = git.mergedInto { parts.append("merged→\(merged)") }
         return parts.joined(separator: " ")
     }
-
-    private func table(headers: [String], rows: [[String]], rightAligned: Set<Int>) {
-        guard !rows.isEmpty else {
-            Swift.print("  (none)")
-            return
-        }
-        let widths = headers.indices.map { column in
-            ([headers] + rows).map { $0[column].count }.max() ?? 0
-        }
-        for row in [headers] + rows {
-            let cells = row.enumerated().map { column, cell in
-                let padding = String(repeating: " ", count: widths[column] - cell.count)
-                return rightAligned.contains(column) ? padding + cell : cell + padding
-            }
-            var line = "  " + cells.joined(separator: "  ")
-            while line.hasSuffix(" ") { line.removeLast() }
-            Swift.print(line)
-        }
-    }
 }
