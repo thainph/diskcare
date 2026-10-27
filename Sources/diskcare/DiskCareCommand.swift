@@ -7,7 +7,7 @@ struct DiskCareCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "diskcare",
         abstract: "Find and clean disk space wasted by build artifacts, dependencies and stale worktrees.",
-        subcommands: [Scan.self, Clean.self],
+        subcommands: [Scan.self, Clean.self, Docker.self],
         defaultSubcommand: Scan.self
     )
 }
@@ -75,6 +75,28 @@ struct Scan: ParsableCommand {
             try printJSON(report)
         } else {
             ReportPrinter(report: report, top: top, minimumBytes: minimum).print()
+        }
+    }
+}
+
+struct Docker: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Report Docker disk usage and unused images, volumes and containers (read-only).")
+
+    @Option(name: .long, help: "Docker socket path (default: DOCKER_HOST, OrbStack, Docker Desktop, /var/run/docker.sock).")
+    var socket: String?
+
+    @Option(name: .long, help: "Rows to show per table.")
+    var top: Int = 15
+
+    @Flag(name: .long, help: "Print the full report as JSON.")
+    var json = false
+
+    func run() throws {
+        let report = DockerScanner.scan(DockerScanner.Options(socketPath: socket))
+        if json {
+            try printJSON(report)
+        } else {
+            DockerReportPrinter(report: report, top: top).print()
         }
     }
 }

@@ -105,7 +105,7 @@ struct Clean: ParsableCommand {
         let linked = plan.reduce(Int64(0)) { $0 + $1.hardlinkedBytes }
         print("Cleanup plan: \(plan.count) items, \(ByteFormat.string(total))"
             + (linked > 0 ? " (incl. \(ByteFormat.string(linked)) hard-linked, may not be freed)" : ""))
-        TablePrinter.print(
+        table(
             headers: ["SIZE", "ACTION", "KIND", "WHY", "PATH"],
             rows: plan.map {
                 [
