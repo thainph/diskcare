@@ -133,6 +133,7 @@ struct OverviewView: View {
             } else if let forecast = model.forecastText {
                 StatusBanner(message: forecast + ". Start with the largest item below.", isError: true)
             }
+            LaunchAtLoginBanner()
             diskCard
             reclaimCard
             if !model.growth.liveAlerts.isEmpty || (model.growth.report?.alerts.isEmpty == false) {
@@ -159,9 +160,7 @@ struct OverviewView: View {
                         .help("Space macOS can free on demand (snapshots, iCloud copies). Not counted as free by df.")
                 }
                 Spacer()
-                if let date = model.lastScanAt {
-                    Text("Scanned \(date, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
-                }
+                LastScanLabel(model: model)
             }
             if let total = model.totalBytes, let free = model.freeBytes {
                 DiskUsageBar(totalBytes: total, freeBytes: free, reclaimable: model.reclaimable, height: 18)

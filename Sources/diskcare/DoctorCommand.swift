@@ -12,7 +12,7 @@ struct DoctorCommand: ParsableCommand {
           diskcare doctor --no-scan
           diskcare doctor --fix terraform-plugin-cache    # show the config diff, ask, then write it
 
-        Checks: \(Doctor.checks.map(\.id).joined(separator: ", "))
+        Checks: \(Doctor.checks.map(\.id).joined(separator: ", ")), scan-freshness (from history.sqlite)
         """
     )
 
@@ -30,13 +30,16 @@ struct DoctorCommand: ParsableCommand {
     @Flag(name: .long, help: "Print results as JSON.")
     var json = false
 
+    @Option(name: .long, help: "History database path (for the last-scan check).")
+    var database: String = HistoryStore.defaultPath
+
     func run() throws {
         if let fix {
             try applyFix(fix)
             return
         }
         let report = noScan ? nil : DiskAnalyzer.analyze(scan.options, inspectGit: false)
-        let results = Doctor.run(DoctorContext(report: report))
+        let results = Doctor.run(DoctorContext(report: report)) + [scanFreshness()]
         if json {
             try printJSON(results)
             return
@@ -50,6 +53,14 @@ struct DoctorCommand: ParsableCommand {
         let warnings = results.filter { $0.status == .warning }.count
         print("\(warnings) warning\(warnings == 1 ? "" : "s"), \(results.filter { $0.status == .info }.count) suggestions"
             + (savings > 0 ? ", ~\(ByteFormat.string(savings)) avoidable" : ""))
+    }
+
+    /// How old the latest recorded scan is. Never creates the history database.
+    private func scanFreshness() -> CheckResult {
+        let latest = FileManager.default.fileExists(atPath: database)
+            ? (try? HistoryStore(path: database).latestScan()) ?? nil
+            : nil
+        return ScanFreshness.checkResult(lastScan: latest)
     }
 
     private func printResult(_ result: CheckResult) {

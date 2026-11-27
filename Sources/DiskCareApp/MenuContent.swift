@@ -19,6 +19,7 @@ struct MenuContent: View {
             Divider()
             reclaimableSection
             growthAlert
+            LaunchAtLoginBanner()
             Button {
                 openMain(.overview)
             } label: {
@@ -106,9 +107,7 @@ struct MenuContent: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            if let date = model.lastScanAt {
-                Text("Updated \(date, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
-            }
+            LastScanLabel(model: model)
             Spacer()
             Button {
                 model.scan()

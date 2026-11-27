@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
@@ -7,7 +6,7 @@ struct SettingsView: View {
 
     @Bindable var settings: AppSettings
     let onChange: () -> Void
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    private let launchAtLogin = LaunchAtLogin.shared
     @State private var loginError: String?
 
     var body: some View {
@@ -37,8 +36,7 @@ struct SettingsView: View {
 
             Section("Background") {
                 Stepper("Scan every \(settings.scanIntervalHours) hours", value: $settings.scanIntervalHours, in: 1...48)
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, enabled in setLaunchAtLogin(enabled) }
+                Toggle("Launch at login", isOn: Binding(get: { launchAtLogin.isEnabled }, set: setLaunchAtLogin))
                 if let loginError {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
@@ -57,6 +55,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
+        .onAppear { launchAtLogin.refresh() }
         .onChange(of: settings.scanIntervalHours) { onChange() }
     }
 
@@ -74,15 +73,10 @@ struct SettingsView: View {
 
     private func setLaunchAtLogin(_ enabled: Bool) {
         do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
+            try launchAtLogin.set(enabled)
             loginError = nil
         } catch {
             loginError = "\(error.localizedDescription)"
-            launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
 }

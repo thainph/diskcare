@@ -21,6 +21,12 @@ struct DiskCareApp: App {
         .defaultSize(width: 980, height: 680)
         .defaultLaunchBehavior(.suppressed)
 
+        Window("Welcome to DiskCare", id: WelcomeView.windowID) {
+            WelcomeView(model: model)
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
         Window("DiskCare Settings", id: SettingsView.windowID) {
             SettingsView(settings: model.settings, onChange: { model.startSchedule() })
         }
@@ -43,6 +49,10 @@ private struct MenuBarLabel: View {
             .labelStyle(.titleAndIcon)
             .task {
                 model.startOnce()
+                if !model.settings.hasCompletedWelcome {
+                    openWindow(id: WelcomeView.windowID)
+                    NSApp.activate()
+                }
                 await SnapshotDebug.run(model: model) { openWindow(id: MainWindow.windowID) }
             }
             .onReceive(NotificationCenter.default.publisher(for: .showMainWindow)) { _ in
@@ -75,17 +85,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppModel {
-    /// First launch: permissions, schedule and an initial scan.
+    /// Once per launch: schedule, space monitor and a catch-up scan when the last one is too old.
+    /// Notification permission is asked by the welcome screen on first run.
     func startOnce() {
         guard !didStart else { return }
         didStart = true
-        requestNotificationPermission()
+        if settings.hasCompletedWelcome { requestNotificationPermission() }
         startSchedule()
         startSpaceMonitor()
-        // Show the previous results instantly; refresh quietly in the background.
-        let age = restoreSnapshot()
-        if age == nil || age! > 15 * 60 {
-            scan(priority: .background)
-        }
+        // Show the previous results instantly; refresh in the background only when they are stale.
+        restoreSnapshot()
+        scanIfDue()
     }
 }

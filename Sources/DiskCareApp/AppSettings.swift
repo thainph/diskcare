@@ -36,6 +36,10 @@ final class AppSettings {
     var scanIntervalHours: Int {
         didSet { defaults.set(scanIntervalHours, forKey: Keys.scanIntervalHours) }
     }
+    /// The first-run welcome screen was completed (shown once).
+    var hasCompletedWelcome: Bool {
+        didSet { defaults.set(hasCompletedWelcome, forKey: Keys.hasCompletedWelcome) }
+    }
 
     init() {
         defaults.register(defaults: [
@@ -48,6 +52,7 @@ final class AppSettings {
             Keys.lowSpacePercent: 15,
             Keys.criticalSpacePercent: 8,
             Keys.scanIntervalHours: 6,
+            Keys.hasCompletedWelcome: false,
         ])
         roots = defaults.stringArray(forKey: Keys.roots) ?? []
         idleDays = defaults.integer(forKey: Keys.idleDays)
@@ -58,6 +63,7 @@ final class AppSettings {
         lowSpacePercent = defaults.integer(forKey: Keys.lowSpacePercent)
         criticalSpacePercent = defaults.integer(forKey: Keys.criticalSpacePercent)
         scanIntervalHours = defaults.integer(forKey: Keys.scanIntervalHours)
+        hasCompletedWelcome = defaults.bool(forKey: Keys.hasCompletedWelcome)
     }
 
     var criteria: CleanupCriteria {
@@ -94,5 +100,6 @@ final class AppSettings {
         static let lowSpacePercent = "lowSpacePercent"
         static let criticalSpacePercent = "criticalSpacePercent"
         static let scanIntervalHours = "scanIntervalHours"
+        static let hasCompletedWelcome = "hasCompletedWelcome"
     }
 }

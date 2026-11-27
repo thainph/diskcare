@@ -45,6 +45,13 @@ final class AppModel {
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.growth.stopWatching() }
         }
+        // A Mac that sleeps a lot misses scheduled scans: catch up after wake.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                LaunchAtLogin.shared.refresh()
+                self?.scanIfDue()
+            }
+        }
     }
 
     /// Memoized: SwiftUI reads the plan many times per render (lists, totals, sidebar badges).
@@ -177,6 +184,16 @@ final class AppModel {
         return days < 1 ? "At the current rate the disk fills up within a day" : "At the current rate the disk is full in ~\(Int(days.rounded())) days"
     }
 
+    var scanStaleness: ScanStaleness {
+        ScanFreshness.staleness(lastScan: lastScanAt)
+    }
+
+    /// "Last full scan: 3 days ago".
+    var lastScanText: String {
+        guard let lastScanAt else { return "No full scan yet" }
+        return "Last full scan: \(ScanFreshness.ageText(lastScan: lastScanAt))"
+    }
+
     var menuTitle: String {
         freeBytes.map { ByteFormat.string($0) } ?? "DiskCare"
     }
@@ -283,6 +300,13 @@ final class AppModel {
         guard let space else { return }
         forecast = await growth.record(FreeSample(date: Date(), space: space))
         evaluateSpaceAlerts()
+    }
+
+    /// Scans in the background right away when the last full scan is older than twice the schedule
+    /// interval (launch, wake from sleep).
+    func scanIfDue() {
+        guard ScanFreshness.isScanDue(lastScan: lastScanAt, intervalHours: settings.scanIntervalHours) else { return }
+        scan(priority: .background)
     }
 
     /// Rescans periodically when the system decides it is a good time (idle, on power…).
