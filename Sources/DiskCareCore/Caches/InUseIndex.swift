@@ -90,7 +90,7 @@ public struct InUseIndex: Sendable {
         var paths = Set<String>()
         for pid in pids.prefix(Int(max(0, filled))) where pid > 0 {
             guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
-            paths.insert(String(cString: buffer))
+            paths.insert(String(nullTerminated: buffer))
         }
         return paths.sorted()
     }

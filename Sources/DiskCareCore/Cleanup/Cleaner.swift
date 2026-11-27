@@ -47,7 +47,7 @@ public enum Cleaner {
         let guardrail = DeletionGuard(roots: roots)
 
         // Logged before as well, so a crash mid-delete still leaves a trace.
-        func start(_ candidate: CleanupCandidate, mode: String) -> CleanupCandidate {
+        @Sendable func start(_ candidate: CleanupCandidate, mode: String) -> CleanupCandidate {
             log.append(DeletionRecord(
                 path: candidate.path, bytes: candidate.bytes, mode: mode,
                 source: candidate.action == .removeWorktree ? "worktree" : "artifact", result: "started"
@@ -55,7 +55,7 @@ public enum Cleaner {
             return candidate
         }
 
-        func finish(_ outcome: CleanupOutcome, mode: String) -> CleanupOutcome {
+        @Sendable func finish(_ outcome: CleanupOutcome, mode: String) -> CleanupOutcome {
             let candidate = outcome.candidate
             log.append(DeletionRecord(
                 path: candidate.path, bytes: candidate.bytes, mode: mode,

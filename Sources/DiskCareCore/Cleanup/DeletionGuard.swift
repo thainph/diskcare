@@ -138,7 +138,7 @@ public struct DeletionGuard: Sendable {
         defer { close(descriptor) }
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         guard fcntl(descriptor, F_GETPATH, &buffer) == 0 else { return nil }
-        return String(cString: buffer)
+        return String(nullTerminated: buffer)
     }
 
     static func identity(followingLinks path: String) -> FileID? {
@@ -166,7 +166,7 @@ public struct DeletionGuard: Sendable {
         defer { close(descriptor) }
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         guard fcntl(descriptor, F_GETPATH, &buffer) == 0 else { return nil }
-        return String(cString: buffer)
+        return String(nullTerminated: buffer)
     }
 
     static func deepestExistingAncestor(of path: String) -> String? {
@@ -177,5 +177,12 @@ public struct DeletionGuard: Sendable {
             current = (current as NSString).deletingLastPathComponent
         }
         return nil
+    }
+}
+
+extension String {
+    /// A C string read into a fixed-size buffer (`F_GETPATH`, `proc_pidpath`).
+    init(nullTerminated buffer: [CChar]) {
+        self.init(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 }
