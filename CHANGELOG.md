@@ -2,6 +2,27 @@
 
 All notable changes to DiskCare are documented here. Versions follow [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- **Shared Cargo build dirs** (`build.target-dir`, `build.build-dir`, `CARGO_TARGET_DIR`, also from shell rc
+  files and `.cargo/config.toml` above scan roots) are measured under Caches. Only their `incremental/`
+  dirs are preselected; whole profiles are manual, a running build (Cargo's lock) or binary blocks them.
+- Configured Terraform plugin cache, pnpm `store-dir` and sccache locations are measured; a configured
+  location is only cleaned when it looks like the tool's own cache.
+- Terraform plugin cache: old provider versions are suggested only when no scanned project uses them.
+- Deletion audit log (`~/Library/Application Support/DiskCare/deletions.jsonl`); leftovers of an
+  interrupted delete are listed and finished.
+
+### Changed
+- Doctor: `cargo-build-cache` replaces `cargo-shared-target`. It no longer recommends a shared
+  target dir (it never goes stale and filled a 460 GB disk); it suggests sccache and warns when a
+  shared dir exceeds 15 GB.
+- Deletion safety: paths are compared by inode (firmlinks, `/tmp` vs `/private/tmp`, letter case),
+  unnormalized paths are refused, the checked directory must still be the one deleted, and personal
+  folders are protected. Old versions/stale projects are suggested but no longer preselected.
+- Cleaning more than 20 GB, or anything "Select all safe" would not pick, asks a second time.
+
 ## [0.1.1] - 2026-10-27
 
 ### Added

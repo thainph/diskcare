@@ -14,22 +14,22 @@ final class DoctorModel {
 
     private var lastReportDate: Date?
 
-    func run(report: ScanReport?) {
+    func run(report: ScanReport?, caches: CacheReport? = nil) {
         guard !isRunning else { return }
         isRunning = true
         lastReportDate = report?.scannedAt
         Task {
             results = await Task.detached(priority: .utility) {
-                Doctor.run(DoctorContext(report: report))
+                Doctor.run(DoctorContext(report: report, cacheReport: caches))
             }.value
             isRunning = false
         }
     }
 
     /// Re-runs only when a newer scan arrives.
-    func refreshIfNeeded(report: ScanReport?) {
+    func refreshIfNeeded(report: ScanReport?, caches: CacheReport?) {
         guard results.isEmpty || report?.scannedAt != lastReportDate else { return }
-        run(report: report)
+        run(report: report, caches: caches)
     }
 
     func proposeFix(_ checkID: String) {
@@ -63,6 +63,7 @@ final class DoctorModel {
 /// Self-contained: pass the latest scan report; the view owns its model.
 struct DoctorView: View {
     let report: ScanReport?
+    var caches: CacheReport?
     var showsHeader = true
     /// nil = no inner scroll view (the host page scrolls).
     var listMaxHeight: CGFloat? = 260
@@ -75,7 +76,7 @@ struct DoctorView: View {
                 Spacer()
                 if model.isRunning { ProgressView().controlSize(.small) }
                 Button {
-                    model.run(report: report)
+                    model.run(report: report, caches: caches)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -102,7 +103,7 @@ struct DoctorView: View {
                 Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             }
         }
-        .task(id: report?.scannedAt) { model.refreshIfNeeded(report: report) }
+        .task(id: report?.scannedAt) { model.refreshIfNeeded(report: report, caches: caches) }
         .confirmationDialog(
             "Edit \(model.pendingChange?.change.path.abbreviatingHome ?? "config")?",
             isPresented: Binding(get: { model.pendingChange != nil }, set: { if !$0 { model.pendingChange = nil } })

@@ -120,6 +120,82 @@ import Testing
         }
     }
 
+    @Test func gateAcceptsFinderAndRustdocFilesButNotLookAlikes() throws {
+        let home = try makeHome()
+        defer { try? fm.removeItem(atPath: home) }
+        let guardrail = DeletionGuard(roots: [], home: home, environment: [:])
+        let target = home + "/t"
+        try makeTargetDir(target)
+        try write(target + "/.DS_Store")
+        try write(target + "/.rustdoc_fingerprint.json", "{}")
+        try write(target + "/doc/app/index.html")
+        #expect(CargoBuildDirectory.gateProblem(target, guardrail: guardrail) == nil)
+
+        try write(target + "/meeting-notes-2024.txt")
+        #expect(CargoBuildDirectory.gateProblem(target, guardrail: guardrail) != nil, "a file with dashes is no target triple")
+        try fm.removeItem(atPath: target + "/meeting-notes-2024.txt")
+        try write(target + "/my-photos-backup/2024/.fingerprint/x")
+        #expect(CargoBuildDirectory.gateProblem(target, guardrail: guardrail) != nil, "a folder with dashes is no target triple")
+        #expect(!CargoBuildDirectory.profiles(in: target).contains { $0.hasPrefix("my-photos-backup") })
+        #expect(CargoBuildDirectory.profiles(in: target).contains("aarch64-apple-darwin/debug"))
+    }
+
+    @Test func appDataNextToBinariesIsFlagged() throws {
+        let home = try makeHome()
+        defer { try? fm.removeItem(atPath: home) }
+        try makeTargetDir(home + "/t")
+        try write(home + "/t/debug/app.sqlite", bytes: 10)
+        try fm.createDirectory(atPath: home + "/t/debug/app.dSYM/Contents", withIntermediateDirectories: true)
+        let hazard = CargoBuildDirectory.profileHazard(home + "/t/debug")
+        #expect(hazard.blocker == nil && hazard.warning?.contains("app.sqlite") == true)
+    }
+
+    @Test func unreadableLockIsTreatedAsHeld() throws {
+        let home = try makeHome()
+        defer { try? fm.removeItem(atPath: home) }
+        try makeTargetDir(home + "/t")
+        try fm.removeItem(atPath: home + "/t/debug/.cargo-lock")
+        try fm.createSymbolicLink(atPath: home + "/t/debug/.cargo-lock", withDestinationPath: home + "/elsewhere")
+        try write(home + "/elsewhere", "")
+        #expect(throws: CleanupError.self) {
+            try Cleaner.removeTree(home + "/t/debug/incremental", mode: .delete, expected: nil, holdingLock: home + "/t/debug/.cargo-lock")
+        }
+        #expect(fm.fileExists(atPath: home + "/t/debug/incremental"))
+        // No lock file at all: nothing builds there.
+        try Cleaner.removeTree(home + "/t/release/incremental", mode: .delete, expected: nil, holdingLock: home + "/t/release/missing-lock")
+        #expect(!fm.fileExists(atPath: home + "/t/release/incremental"))
+    }
+
+    @Test func configuredCacheLocationsMustLookLikeTheCache() throws {
+        let home = try makeHome()
+        defer { try? fm.removeItem(atPath: home) }
+        try write(home + "/Projects/app/README.md")
+        try write(home + "/.npmrc", "store-dir=\(home)/Projects\n")
+        try write(home + "/good-store/v10/files/00/abc", bytes: 10)
+        try write(home + "/.zshrc", "export SCCACHE_DIR=$HOME/good-sccache\nexport SCCACHE_DIR=$HOME/Projects\n")
+        let definitions = CacheCatalog.definitions(environment: [:], home: home)
+        let pnpm = try #require(definitions.first { $0.id == "pnpm-store" })
+        #expect(!pnpm.paths.contains(home + "/Projects"))
+        let refusedStore = try #require(definitions.first { $0.id == "pnpm-store-configured" })
+        #expect(refusedStore.safety == .userData && refusedStore.paths == [home + "/Projects"])
+        // The last export wins, as in the shell: SCCACHE_DIR=~/Projects is refused too.
+        #expect(definitions.first { $0.id == "sccache-configured" }?.paths == [home + "/Projects"])
+        #expect(definitions.first { $0.id == "sccache" }?.paths.isEmpty == true)
+
+        try write(home + "/.npmrc", "store-dir=\(home)/good-store\n")
+        let accepted = CacheCatalog.definitions(environment: [:], home: home)
+        #expect(accepted.first { $0.id == "pnpm-store" }?.paths.contains(home + "/good-store") == true)
+        #expect(!accepted.contains { $0.id == "pnpm-store-configured" })
+    }
+
+    @Test func extensionlessCargoConfigWinsLikeInCargo() throws {
+        let home = try makeHome()
+        defer { try? fm.removeItem(atPath: home) }
+        try write(home + "/.cargo/config", "[build]\ntarget-dir = \"/from-config\"\n")
+        try write(home + "/.cargo/config.toml", "[build]\ntarget-dir = \"/from-toml\"\n")
+        #expect(CargoBuildLocator.locate(home: home, environment: [:]).map(\.path) == ["/from-config"])
+    }
+
     // MARK: Catalog & items
 
     @Test func sharedTargetDirIsMeasuredButNeverEmptiedWhole() throws {

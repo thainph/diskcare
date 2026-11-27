@@ -24,8 +24,10 @@ public enum CargoBuildLocator {
         let cargoHome = self.cargoHome(home: home, environment: environment)
         var found: [CargoBuildLocation] = []
 
-        if let value = ShellRC.value(of: "CARGO_TARGET_DIR", environment: environment, home: home), value.hasPrefix("/") {
-            found.append(CargoBuildLocation(source: "CARGO_TARGET_DIR", path: value, buildDirDepth: 0))
+        for name in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+            if let value = ShellRC.value(of: name, environment: environment, home: home), value.hasPrefix("/") {
+                found.append(CargoBuildLocation(source: name, path: value, buildDirDepth: 0))
+            }
         }
         if let value = ShellRC.value(of: "CARGO_BUILD_BUILD_DIR", environment: environment, home: home),
            let location = buildDir(value, source: "CARGO_BUILD_BUILD_DIR", base: nil, cargoHome: cargoHome) {
@@ -69,7 +71,8 @@ public enum CargoBuildLocator {
         var seen = Set<String>()
         return directories.compactMap { directory -> String? in
             guard seen.insert(directory).inserted else { return nil }
-            for name in ["config.toml", "config"] where FileManager.default.fileExists(atPath: directory + "/" + name) {
+            // With both present Cargo reads the extensionless one (and warns).
+            for name in ["config", "config.toml"] where FileManager.default.fileExists(atPath: directory + "/" + name) {
                 return directory + "/" + name
             }
             return nil

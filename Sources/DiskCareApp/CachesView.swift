@@ -71,8 +71,9 @@ final class CachesModel {
     func refresh(priority: ScanPriority, progress: ScanProgress? = nil) async {
         guard !isScanning, !isCleaning else { return }
         isScanning = true
-        let definitions = CacheCatalog.definitions(scanRoots: scanRoots())
-        var options = CacheScanner.Options(definitions: definitions, priority: priority, progress: progress)
+        let roots = scanRoots()
+        var options = CacheScanner.Options(definitions: CacheCatalog.definitions(scanRoots: roots), priority: priority, progress: progress)
+        options.scanRoots = roots
         options.terraformDirs = terraformDirs()
         let report = await CacheScanner.scan(options)
         apply(report)

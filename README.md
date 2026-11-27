@@ -25,7 +25,7 @@ safe to remove, and warns you before the disk is full.
 | **Developer caches** | ~45 known locations: pnpm/npm/yarn/uv/pip/Homebrew/Go/Cargo/CocoaPods/SwiftPM, Playwright & Puppeteer browsers (keeps the newest version), Xcode DerivedData and device support, IDE caches. Runs each tool's own cleanup (`brew cleanup`, `pnpm store prune`, `uv cache clean`…) when installed. Local AI models and other user data are shown but never cleaned. |
 | **Docker** | Reads the Engine API socket (OrbStack, Docker Desktop). Safe removals (unused images, build cache, stopped containers, anonymous volumes) are separated from named volumes that may hold databases — those are archived to `~/DiskCareBackups` first and can be restored. |
 | **Growth** | Every scan is recorded (SQLite). See what grew this week, and get a notification when a build folder balloons — an FSEvents watcher re-measures only the folders that changed. |
-| **Prevention** | Checks tool settings that stop waste from coming back — Terraform `plugin_cache_dir`, a shared Cargo `target-dir`, pnpm migration, Docker build-cache GC — with one-click fixes that show the diff and back up the file first. |
+| **Prevention** | Checks tool settings that stop waste from coming back — Terraform `plugin_cache_dir`, sccache for Cargo (a shared `target-dir` is measured and flagged instead: it never goes stale), pnpm migration, Docker build-cache GC — with one-click fixes that show the diff and back up the file first. Every location a fix configures is also measured under Caches. |
 | **CLI** | Everything above is scriptable with `diskcare`. Destructive commands are dry runs unless `--apply`. |
 
 **Designed to be invisible:** automatic scans run step by step on a single background thread with

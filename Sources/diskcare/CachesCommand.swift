@@ -23,7 +23,9 @@ struct CachesList: ParsableCommand {
     var root: [String] = []
 
     func run() throws {
-        let report = CacheScanner.scan(CacheScanner.Options(definitions: CacheCatalog.definitions(scanRoots: root.map(ScanOptions.normalize))))
+        var options = CacheScanner.Options(definitions: CacheCatalog.definitions(scanRoots: root.map(ScanOptions.normalize)))
+        options.scanRoots = root.map(ScanOptions.normalize)
+        let report = CacheScanner.scan(options)
         if json {
             try printJSON(report)
             return
@@ -102,7 +104,9 @@ struct CachesClean: ParsableCommand {
     func run() throws {
         let resolver = CommandResolver.standard()
         let definitions = CacheCatalog.definitions(scanRoots: root.map(ScanOptions.normalize))
-        let report = CacheScanner.scan(CacheScanner.Options(definitions: definitions, resolver: resolver))
+        var options = CacheScanner.Options(definitions: definitions, resolver: resolver)
+        options.scanRoots = root.map(ScanOptions.normalize)
+        let report = CacheScanner.scan(options)
         let targets: [CacheCleanTarget]
         do {
             targets = try CacheCleaner.targets(ids: (allSafe ? report.allSafeIDs : []) + ids, in: report)

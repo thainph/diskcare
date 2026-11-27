@@ -8,15 +8,28 @@ public enum CargoBuildDirectory {
     /// Written by Cargo into every target/build dir it creates.
     static let cacheDirTagSignature = "Signature: 8a477f597d28d172789f06886806bc55"
 
-    /// Top-level children Cargo itself creates (besides profiles and target triples).
-    static let knownTopLevel: Set<String> = [
-        "debug", "release", "doc", "package", "tmp", "rust-analyzer", "CACHEDIR.TAG", ".rustc_info.json",
-        ".cargo-lock",
+    /// Top-level directories Cargo and its usual companions create (besides profiles and target triples).
+    static let knownTopLevelDirectories: Set<String> = ["debug", "release", "doc", "package", "tmp", "rust-analyzer", "nextest", "llvm-cov-target"]
+
+    /// Top-level files Cargo, rustdoc and Finder write.
+    static let knownTopLevelFiles: Set<String> = [
+        "CACHEDIR.TAG", ".rustc_info.json", ".rustdoc_fingerprint.json", ".future-incompat-report.json",
+        ".cargo-lock", ".package-cache", ".DS_Store",
     ]
 
     /// Directories Cargo creates inside a profile. `bundle` (Tauri installers) is known but holds
-    /// output that is not a cache.
+    /// output that is not a cache; `*.dSYM` are debug symbols of the binaries next to them.
     static let knownProfileDirectories: Set<String> = [".fingerprint", "build", "deps", "examples", "incremental", "bundle"]
+
+    /// Files that look like an app's own data (written by a binary run from the profile), not build output.
+    static let dataFileExtensions: Set<String> = ["db", "sqlite", "sqlite3", "log", "json", "toml", "yaml", "yml", "csv"]
+
+    /// First component of every Rust target triple in use.
+    static let architectures: Set<String> = [
+        "aarch64", "arm64", "arm64e", "x86_64", "i686", "i586", "i386", "wasm32", "wasm64", "armv7", "armv7s", "armv7a",
+        "thumbv6m", "thumbv7m", "thumbv7em", "thumbv8m.main", "riscv32imac", "riscv32imc", "riscv64gc", "powerpc64le", "s390x",
+        "mips", "mipsel", "loongarch64", "nvptx64", "sparc64", "x86_64h",
+    ]
 
     /// Why the directory must stay report-only; nil when it passes every check.
     public static func gateProblem(_ path: String, guardrail: DeletionGuard) -> String? {
@@ -34,8 +47,12 @@ public enum CargoBuildDirectory {
     }
 
     static func isKnownTopLevel(_ name: String, in path: String) -> Bool {
-        knownTopLevel.contains(name) || name.hasPrefix("flycheck") || Cleaner.isStagingName(name)
-            || isProfile(path + "/" + name) || isTargetTriple(name)
+        let child = path + "/" + name
+        guard CachePaths.isRealDirectory(child) else {
+            return knownTopLevelFiles.contains(name)
+        }
+        return knownTopLevelDirectories.contains(name) || name.hasPrefix("flycheck") || Cleaner.isStagingName(name)
+            || isProfile(child) || isTargetTriple(name, at: child)
     }
 
     /// A profile directory (`debug`, `release`, custom `[profile.x]`) has Cargo's `.fingerprint` dir.
@@ -43,9 +60,13 @@ public enum CargoBuildDirectory {
         CachePaths.isRealDirectory(path + "/.fingerprint")
     }
 
-    /// `aarch64-apple-darwin`, `wasm32-unknown-unknown`, `x86_64-unknown-linux-gnu`…
-    static func isTargetTriple(_ name: String) -> Bool {
-        name.split(separator: "-").count >= 3 && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }
+    /// `aarch64-apple-darwin`, `wasm32-unknown-unknown`, `x86_64-unknown-linux-gnu`…: a real directory
+    /// named after a known architecture that holds only profiles (and Finder's `.DS_Store`).
+    static func isTargetTriple(_ name: String, at path: String) -> Bool {
+        let parts = name.split(separator: "-")
+        guard parts.count >= 2, architectures.contains(String(parts[0])), CachePaths.isRealDirectory(path) else { return false }
+        let children = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+        return children.allSatisfy { $0 == ".DS_Store" || isProfile(path + "/" + $0) || Cleaner.isStagingName($0) }
     }
 
     /// Profile directories of one build dir: `<profile>` and `<triple>/<profile>`, relative paths.
@@ -55,7 +76,7 @@ public enum CargoBuildDirectory {
         for name in children where !name.hasPrefix(".") {
             if isProfile(buildDir + "/" + name) {
                 profiles.append(name)
-            } else if isTargetTriple(name) {
+            } else if isTargetTriple(name, at: buildDir + "/" + name) {
                 let nested = ((try? FileManager.default.contentsOfDirectory(atPath: buildDir + "/" + name)) ?? []).sorted()
                 profiles += nested.filter { isProfile(buildDir + "/" + name + "/" + $0) }.map { name + "/" + $0 }
             }
@@ -68,11 +89,18 @@ public enum CargoBuildDirectory {
     static func profileHazard(_ profilePath: String) -> (warning: String?, blocker: String?) {
         let children = (try? FileManager.default.contentsOfDirectory(atPath: profilePath)) ?? []
         let directories = children.filter { CachePaths.isRealDirectory(profilePath + "/" + $0) }
-        if let stranger = directories.first(where: { !knownProfileDirectories.contains($0) && !Cleaner.isStagingName($0) }) {
+        if let stranger = directories.first(where: {
+            !knownProfileDirectories.contains($0) && !$0.hasSuffix(".dSYM") && !Cleaner.isStagingName($0)
+        }) {
             return (nil, "contains \(stranger)/, which Cargo does not create")
         }
-        if directories.contains("bundle") { return ("holds installers in bundle/ (.app/.dmg)", nil) }
-        return (nil, nil)
+        let dataFiles = children.filter { name in
+            !directories.contains(name) && dataFileExtensions.contains((name as NSString).pathExtension.lowercased())
+        }
+        var warnings: [String] = []
+        if directories.contains("bundle") { warnings.append("holds installers in bundle/ (.app/.dmg)") }
+        if let file = dataFiles.first { warnings.append("holds \(file), which looks like app data, not build output") }
+        return (warnings.isEmpty ? nil : warnings.joined(separator: "; "), nil)
     }
 
     /// The lock Cargo holds (flock) while building into a profile.

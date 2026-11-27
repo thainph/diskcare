@@ -150,10 +150,10 @@ public struct CargoBuildCacheCheck: DoctorCheck {
         CargoBuildLocator.cargoHome(home: context.home, environment: context.environment)
     }
 
-    /// `config.toml`, or the legacy extensionless `config` when only that exists.
+    /// `config.toml`, or the legacy extensionless `config` when it exists (Cargo prefers it when both do).
     func configPath(_ context: DoctorContext) -> String {
         let home = cargoHome(context)
-        if !context.fileExists(home + "/config.toml"), context.fileExists(home + "/config") { return home + "/config" }
+        if context.fileExists(home + "/config") { return home + "/config" }
         return home + "/config.toml"
     }
 
@@ -194,7 +194,10 @@ public struct CargoBuildCacheCheck: DoctorCheck {
         if let usage, usage.count > 0 { details.append("\(usage.count) per-project target dirs use \(ByteFormat.string(usage.total))") }
         var largest: (location: CargoBuildLocation, bytes: Int64)?
         for location in shared {
-            let bytes = context.measureSizes ? FileSystemScanner.scan(ScanOptions(roots: [location.path], priority: .background)).stats.bytes : nil
+            // A shared dir can hold hundreds of GB: reuse the cache scan, measure only when there is none.
+            let measured = context.cacheReport?.entries.first { $0.paths.contains(location.path) }?.bytes
+            let bytes = measured ?? (context.measureSizes
+                ? FileSystemScanner.scan(ScanOptions(roots: [location.path], priority: .background)).stats.bytes : nil)
             details.append("shared build dir \(location.path.abbreviatingHome) (\(location.source))" + (bytes.map { ": \(ByteFormat.string($0))" } ?? ""))
             if let bytes, bytes > (largest?.bytes ?? -1) { largest = (location, bytes) }
         }

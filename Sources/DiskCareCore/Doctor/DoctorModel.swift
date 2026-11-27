@@ -49,6 +49,8 @@ public struct DoctorContext: Sendable {
     public var home: String
     public var environment: [String: String]
     public var report: ScanReport?
+    /// Latest cache measurement: sizes of shared build dirs come from here instead of a rescan.
+    public var cacheReport: CacheReport?
     public var runCommand: CommandRunner
     /// Measure directory sizes (e.g. the pnpm store); off in tests.
     public var measureSizes: Bool
@@ -57,12 +59,14 @@ public struct DoctorContext: Sendable {
         home: String = NSHomeDirectory(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         report: ScanReport? = nil,
+        cacheReport: CacheReport? = nil,
         runCommand: @escaping CommandRunner = ProcessRunner.run,
         measureSizes: Bool = true
     ) {
         self.home = home
         self.environment = environment
         self.report = report
+        self.cacheReport = cacheReport
         self.runCommand = runCommand
         self.measureSizes = measureSizes
     }
@@ -83,26 +87,28 @@ enum ShellRC {
         [".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map { home + "/" + $0 }
     }
 
-    /// Files exporting `name`, e.g. `~/.zshrc: TF_PLUGIN_CACHE_DIR=…`.
+    /// Files exporting `name`, e.g. `~/.zshrc: TF_PLUGIN_CACHE_DIR=…`, in the order the shell reads
+    /// them; within a file the last assignment counts, as in the shell.
     static func exports(of name: String, home: String) -> [(file: String, value: String)] {
         files(home: home).compactMap { file in
             guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
+            var found: String?
             for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
                 var body = line.trimmingCharacters(in: .whitespaces)
                 guard !body.hasPrefix("#") else { continue }
                 if body.hasPrefix("export ") { body = body.dropFirst("export ".count).trimmingCharacters(in: .whitespaces) }
                 guard body.hasPrefix(name + "=") else { continue }
-                let value = body.dropFirst(name.count + 1).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
-                return (file, value)
+                found = body.dropFirst(name.count + 1).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
             }
-            return nil
+            return found.map { (file, $0) }
         }
     }
 
-    /// `name` from the environment, else from the first shell rc file exporting it; `$HOME` expanded.
+    /// `name` from the environment, else the value the shell would end up with (last file exporting
+    /// it, last assignment); `$HOME` expanded.
     static func value(of name: String, environment: [String: String], home: String) -> String? {
         if let value = environment[name], !value.isEmpty { return value }
-        guard let value = exports(of: name, home: home).first?.value, !value.isEmpty else { return nil }
+        guard let value = exports(of: name, home: home).last?.value, !value.isEmpty else { return nil }
         return value.replacingOccurrences(of: "${HOME}", with: home).replacingOccurrences(of: "$HOME", with: home)
     }
 }

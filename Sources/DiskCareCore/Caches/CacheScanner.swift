@@ -15,6 +15,8 @@ public enum CacheScanner {
         public var inUse: InUseIndex?
         /// `.terraform` dirs from a project scan; nil = unknown, so no provider version is recommended.
         public var terraformDirs: [String]?
+        /// Project roots (for `.vscode/settings.json` references and protection of the roots).
+        public var scanRoots: [String] = []
 
         public init(
             definitions: [CacheDefinition] = CacheCatalog.definitions(),
@@ -57,8 +59,12 @@ public enum CacheScanner {
             if case .cargoProfiles = definition.itemRule { return !paths.isEmpty }
             return false
         }
-        let inUse = options.inUse ?? (hasCargo ? InUseIndex.snapshot(home: options.home) : .empty)
-        let guardrail = DeletionGuard(roots: [], home: options.home)
+        var environment = ProcessInfo.processInfo.environment
+        environment["CARGO_HOME"] = CargoBuildLocator.cargoHome(home: options.home, environment: environment)
+        let inUse = options.inUse ?? (hasCargo
+            ? InUseIndex.snapshot(home: options.home, cargoHome: environment["CARGO_HOME"], scanRoots: options.scanRoots) : .empty)
+        let guardrail = DeletionGuard(roots: options.scanRoots, home: options.home, environment: environment)
+        let terraformVersions = options.terraformDirs.map(TerraformUsage.referencedVersions)
 
         let entries = resolved.compactMap { definition, paths -> CacheEntry? in
             let roots = paths.compactMap { index.root(at: $0) }
@@ -74,7 +80,7 @@ public enum CacheScanner {
                 nativeCommand: definition.nativeCommand, fallback: definition.fallback,
                 note: definition.note,
                 items: (items(for: definition, roots: roots, index: index, now: options.now, inUse: inUse, guardrail: guardrail,
-                              terraformVersions: options.terraformDirs.map(TerraformUsage.referencedVersions))
+                              terraformVersions: terraformVersions)
                     + leftovers(for: definition, roots: roots, index: index)).sorted { $0.bytes > $1.bytes }
             )
         }

@@ -161,6 +161,9 @@ public enum Cleaner {
                 close(descriptor)
                 throw CleanupError.locked(lockFile)
             }
+        } else if errno != ENOENT {
+            // A lock that exists but cannot be opened (symlink, permissions) is not proof that no build runs.
+            throw CleanupError.locked(lockFile)
         }
         let staging: String
         do {

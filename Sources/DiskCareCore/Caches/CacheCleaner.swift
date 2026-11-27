@@ -170,6 +170,11 @@ public enum CacheCleaner {
             }
             do {
                 if let lockFile = target.lockFile {
+                    // Re-checked now: the report may be hours old (or restored from disk).
+                    if let reason = InUseIndex(runningExecutables: InUseIndex.runningExecutablePaths(), commandLinks: [], referencingFiles: [])
+                        .runningReason(under: path) {
+                        return outcome("skipped", error: reason)
+                    }
                     try Cleaner.removeTree(path, mode: mode, expected: verdict.identity, holdingLock: lockFile)
                 } else if mode == .trash {
                     try Cleaner.trash(path, expected: verdict.identity)

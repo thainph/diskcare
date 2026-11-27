@@ -323,7 +323,7 @@ struct DoctorPage: View {
                 subtitle: "Tool settings that stop the same waste from coming back, e.g. sharing Terraform providers or Rust build output across projects. Fixes show the exact change and back up the file first."
             )
             Card {
-                DoctorView(report: model.report, showsHeader: false, listMaxHeight: nil)
+                DoctorView(report: model.report, caches: model.caches.report, showsHeader: false, listMaxHeight: nil)
             }
         }
     }
