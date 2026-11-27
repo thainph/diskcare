@@ -37,12 +37,22 @@ struct SettingsView: View {
 
             Section("Background") {
                 Stepper("Scan every \(settings.scanIntervalHours) hours", value: $settings.scanIntervalHours, in: 1...48)
-                Stepper("Warn when free space < \(settings.lowSpaceThresholdGB) GB", value: $settings.lowSpaceThresholdGB, in: 5...500, step: 5)
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in setLaunchAtLogin(enabled) }
                 if let loginError {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
+            }
+
+            Section {
+                Stepper("At least \(settings.lowSpaceThresholdGB) GB", value: $settings.lowSpaceThresholdGB, in: 5...500, step: 5)
+                Stepper("Or \(settings.lowSpacePercent)% of the disk, if larger", value: $settings.lowSpacePercent, in: 1...50)
+                Stepper("Critical below \(settings.criticalSpacePercent)% of the disk", value: $settings.criticalSpacePercent, in: 1...max(1, settings.lowSpacePercent))
+            } header: {
+                Text("Warn when free space is low")
+            } footer: {
+                Text("Free space is checked every 15 minutes. Warnings repeat at most daily, critical alerts every 6 hours.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

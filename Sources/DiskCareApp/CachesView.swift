@@ -17,10 +17,17 @@ final class CachesModel {
     /// Read at clean time so it follows the app's "Move to Trash" setting.
     private let moveToTrash: @MainActor () -> Bool
     private let onCleaned: (@MainActor (CacheCleanResult) -> Void)?
+    /// Called after every fresh measurement (not for restored reports).
+    private let onScanned: (@MainActor (CacheReport) -> Void)?
 
-    init(moveToTrash: @escaping @MainActor () -> Bool = { false }, onCleaned: (@MainActor (CacheCleanResult) -> Void)? = nil) {
+    init(
+        moveToTrash: @escaping @MainActor () -> Bool = { false },
+        onCleaned: (@MainActor (CacheCleanResult) -> Void)? = nil,
+        onScanned: (@MainActor (CacheReport) -> Void)? = nil
+    ) {
         self.moveToTrash = moveToTrash
         self.onCleaned = onCleaned
+        self.onScanned = onScanned
     }
 
     var selectedTargets: [CacheCleanTarget] {
@@ -63,6 +70,7 @@ final class CachesModel {
         let report = await CacheScanner.scan(CacheScanner.Options(priority: priority, progress: progress))
         apply(report)
         isScanning = false
+        onScanned?(report)
     }
 
     /// Shows a previously saved report (app launch) until the next scan finishes.

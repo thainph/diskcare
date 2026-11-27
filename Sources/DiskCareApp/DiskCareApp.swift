@@ -81,6 +81,7 @@ extension AppModel {
         didStart = true
         requestNotificationPermission()
         startSchedule()
+        startSpaceMonitor()
         // Show the previous results instantly; refresh quietly in the background.
         let age = restoreSnapshot()
         if age == nil || age! > 15 * 60 {
