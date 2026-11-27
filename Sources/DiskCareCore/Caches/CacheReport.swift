@@ -21,7 +21,70 @@ public struct CacheItem: Sendable, Codable, Identifiable {
     public let lastUsedAt: Date?
     /// Old version or stale project: suggested for cleanup.
     public let isRecommended: Bool
+    /// Ticked by "Select all safe" / `--all-safe`. Only pure caches qualify, never items that may hold
+    /// output the user cannot rebuild; recommended alone is not enough.
+    public let isPreselectable: Bool
     public let reason: String?
+    /// Why the item cannot be cleaned at all (in use, holds data Cargo does not create…).
+    public let blockedReason: String?
+    /// A lock file the owning tool holds while writing here; held by DiskCare while moving the item away.
+    public let lockFile: String?
+
+    public var isCleanable: Bool { blockedReason == nil }
+
+    public init(
+        id: String, entryID: String, name: String, path: String, bytes: Int64, hardlinkedBytes: Int64,
+        lastUsedAt: Date?, isRecommended: Bool, isPreselectable: Bool = false, reason: String?,
+        blockedReason: String? = nil, lockFile: String? = nil
+    ) {
+        self.id = id
+        self.entryID = entryID
+        self.name = name
+        self.path = path
+        self.bytes = bytes
+        self.hardlinkedBytes = hardlinkedBytes
+        self.lastUsedAt = lastUsedAt
+        self.isRecommended = isRecommended && blockedReason == nil
+        self.isPreselectable = isPreselectable && self.isRecommended
+        self.reason = reason
+        self.blockedReason = blockedReason
+        self.lockFile = lockFile
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, entryID, name, path, bytes, hardlinkedBytes, lastUsedAt, isRecommended, isPreselectable, reason, blockedReason, lockFile
+    }
+
+    /// Reports saved by older versions have no `isPreselectable`: treat it as false.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            entryID: try container.decode(String.self, forKey: .entryID),
+            name: try container.decode(String.self, forKey: .name),
+            path: try container.decode(String.self, forKey: .path),
+            bytes: try container.decode(Int64.self, forKey: .bytes),
+            hardlinkedBytes: try container.decode(Int64.self, forKey: .hardlinkedBytes),
+            lastUsedAt: try container.decodeIfPresent(Date.self, forKey: .lastUsedAt),
+            isRecommended: try container.decode(Bool.self, forKey: .isRecommended),
+            isPreselectable: try container.decodeIfPresent(Bool.self, forKey: .isPreselectable) ?? false,
+            reason: try container.decodeIfPresent(String.self, forKey: .reason),
+            blockedReason: try container.decodeIfPresent(String.self, forKey: .blockedReason),
+            lockFile: try container.decodeIfPresent(String.self, forKey: .lockFile)
+        )
+    }
+
+    /// Whether this item lies inside `other` (a different, enclosing item).
+    func isNested(in other: CacheItem) -> Bool {
+        path.hasPrefix(other.path + "/")
+    }
+}
+
+extension Array where Element == CacheItem {
+    /// Drops items that lie inside another item of the list, so nested selections are counted once.
+    func outermost() -> [CacheItem] {
+        filter { item in !contains { $0.id != item.id && item.isNested(in: $0) } }
+    }
 }
 
 public struct CacheEntry: Sendable, Codable, Identifiable {
@@ -61,12 +124,9 @@ public struct CacheReport: Sendable, Codable {
 
     public var totalBytes: Int64 { entries.reduce(0) { $0 + $1.bytes } }
 
-    /// Bytes in safe caches plus recommended items (old versions, stale projects) of regenerable ones.
+    /// Bytes "Select all safe" / `--all-safe` would clean.
     public var safeReclaimableBytes: Int64 {
-        entries.reduce(0) { total, entry in
-            if entry.safety == .safe, entry.isCleanable { return total + entry.bytes }
-            return total + entry.recommendedItems.reduce(0) { $0 + $1.bytes }
-        }
+        allSafeIDs.reduce(0) { total, id in total + (entry(id: id)?.bytes ?? item(id: id)?.bytes ?? 0) }
     }
 
     public func entry(id: String) -> CacheEntry? { entries.first { $0.id == id } }
@@ -76,12 +136,12 @@ public struct CacheReport: Sendable, Codable {
         return entry(id: entryID)?.items.first { $0.id == id }
     }
 
-    /// Ids selected by `--all-safe`: every non-empty cleanable safe cache, plus recommended items of
+    /// Ids selected by `--all-safe`: every non-empty cleanable safe cache, plus preselectable items of
     /// regenerable caches. User data is never included.
     public var allSafeIDs: [String] {
         entries.flatMap { entry -> [String] in
             if entry.safety == .safe, entry.isCleanable { return entry.bytes > 0 ? [entry.id] : [] }
-            if entry.safety == .regenerable { return entry.recommendedItems.map(\.id) }
+            if entry.safety == .regenerable { return entry.recommendedItems.filter(\.isPreselectable).outermost().map(\.id) }
             return []
         }
     }

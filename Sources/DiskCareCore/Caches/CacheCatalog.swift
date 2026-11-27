@@ -6,13 +6,125 @@ import Foundation
 /// excludes every catalogued location from the others, so each byte is counted once.
 /// Docker is handled by `DockerScanner` and deliberately absent here.
 public enum CacheCatalog {
-    public static func definitions(environment: [String: String] = ProcessInfo.processInfo.environment) -> [CacheDefinition] {
-        packageManagers(environment) + browserAutomation + build + ide + system + aiModels
+    /// Static locations plus the ones found in tool configuration (Cargo build dirs). `scanRoots`
+    /// lets project-level `.cargo/config.toml` files be found as well.
+    public static func definitions(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: String = NSHomeDirectory(),
+        scanRoots: [String] = []
+    ) -> [CacheDefinition] {
+        packageManagers(environment, home: home) + cargoBuild(home: home, environment: environment, scanRoots: scanRoots)
+            + browserAutomation + build(home: home, environment: environment) + ide + system + aiModels
+            + untrustedConfigured(home: home, environment: environment)
+    }
+
+    // MARK: Locations from configuration
+
+    /// What a configured cache directory must look like before DiskCare empties it.
+    enum CacheLayout {
+        case pnpmStore, sccache, terraformPluginCache
+
+        func matches(_ path: String) -> Bool {
+            let children = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+            return children.allSatisfy { name in
+                if name == ".DS_Store" || Cleaner.isStagingName(name) { return true }
+                let isDirectory = CachePaths.isRealDirectory(path + "/" + name)
+                switch self {
+                case .pnpmStore:  // v3, v10…
+                    return isDirectory && name.first == "v" && name.dropFirst().allSatisfy(\.isNumber) && name.count > 1
+                case .sccache:  // CACHEDIR.TAG + one directory per first hex digit of the hash
+                    return name == "CACHEDIR.TAG" || (isDirectory && name.count == 1 && name.allSatisfy(\.isHexDigit))
+                case .terraformPluginCache:  // registry host names
+                    return isDirectory && name.contains(".")
+                }
+            }
+        }
+    }
+
+    /// Why a directory named in configuration (rc files, tool config) must not be cleaned; nil when it
+    /// is a real directory outside protected places, laid out like the tool's own cache.
+    static func configuredProblem(_ path: String, home: String, environment: [String: String], layout: CacheLayout) -> String? {
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        if let problem = DeletionGuard(roots: [], home: home, environment: environment).checkUntrusted(ScanOptions.normalize(path)) {
+            return problem
+        }
+        return layout.matches(path) ? nil : "does not look like its cache (unexpected contents)"
+    }
+
+    static func trusted(_ paths: [String], home: String, environment: [String: String], layout: CacheLayout) -> [String] {
+        paths.filter { configuredProblem($0, home: home, environment: environment, layout: layout) == nil }
+    }
+
+    /// Configured cache directories that failed the checks: still measured, never cleaned.
+    static func untrustedConfigured(home: String, environment: [String: String]) -> [CacheDefinition] {
+        let candidates: [(id: String, title: String, paths: [String], layout: CacheLayout, source: String)] = [
+            ("pnpm-store-configured", "pnpm store (configured)", pnpmStoreDirectories(environment: environment, home: home), .pnpmStore, "store-dir"),
+            ("sccache-configured", "sccache (configured)", [CargoBuildCacheCheck.sccacheDirectory(home: home, environment: environment)], .sccache, "SCCACHE_DIR"),
+            ("terraform-plugins-configured", "Terraform plugin cache (configured)",
+             TerraformPluginCacheCheck.pluginCacheDirectory(home: home, environment: environment).map { [$0] } ?? [], .terraformPluginCache, "plugin_cache_dir"),
+        ]
+        return candidates.compactMap { candidate in
+            let refused = candidate.paths.compactMap { path in
+                configuredProblem(path, home: home, environment: environment, layout: candidate.layout).map { (path, $0) }
+            }
+            guard let first = refused.first else { return nil }
+            return CacheDefinition(
+                id: candidate.id, title: candidate.title, category: .build, safety: .userData, paths: refused.map(\.0),
+                fallback: .none, note: "report only: \(first.1) (from \(candidate.source))"
+            )
+        }
+    }
+
+    /// `store-dir` from pnpm's global rc files or `npm_config_store_dir`; pnpm puts the store in a
+    /// versioned subdirectory (`v10`) of it, so the whole directory is measured.
+    static func pnpmStoreDirectories(environment: [String: String], home: String) -> [String] {
+        let xdg = environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? home + "/.config"
+        var values = [environment["npm_config_store_dir"]].compactMap { $0 }
+        for file in [home + "/Library/Preferences/pnpm/rc", xdg + "/pnpm/rc", home + "/.npmrc"] {
+            guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n") {
+                let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                if parts.count == 2, parts[0] == "store-dir" { values.append(parts[1]) }
+            }
+        }
+        return values.map { $0.replacingOccurrences(of: "${HOME}", with: home).replacingOccurrences(of: "$HOME", with: home) }
+            .filter { $0.hasPrefix("/") || $0.hasPrefix("~/") }
+    }
+
+    // MARK: Configured build locations
+
+    /// Cargo build dirs from `build.target-dir` / `build.build-dir` / `CARGO_TARGET_DIR`. One that fails
+    /// the safety gate is still measured, but report-only, with the reason in its note.
+    static func cargoBuild(home: String, environment: [String: String], scanRoots: [String]) -> [CacheDefinition] {
+        var environment = environment
+        environment["CARGO_HOME"] = CargoBuildLocator.cargoHome(home: home, environment: environment)
+        let guardrail = DeletionGuard(roots: scanRoots, home: home, environment: environment)
+        var used = Set<String>()
+        return CargoBuildLocator.locate(home: home, environment: environment, scanRoots: scanRoots).compactMap { location in
+            guard FileManager.default.fileExists(atPath: location.path) else { return nil }
+            let problem = location.buildDirDepth == 0
+                ? CargoBuildDirectory.gateProblem(location.path, guardrail: guardrail)
+                : guardrail.checkUntrusted(location.path)
+            var id = location.buildDirDepth == 0 ? "cargo-target-shared" : "cargo-build-dir"
+            if !used.insert(id).inserted {
+                var suffix = 2
+                while !used.insert("\(id)-\(suffix)").inserted { suffix += 1 }
+                id += "-\(suffix)"
+            }
+            return CacheDefinition(
+                id: id, title: (location.buildDirDepth == 0 ? "Cargo shared target dir" : "Cargo build dirs") + " (\(location.path.abbreviatingHome))",
+                category: .build, safety: problem == nil ? .regenerable : .userData,
+                paths: [location.path], fallback: .none,
+                itemRule: problem == nil ? .cargoProfiles(buildDirDepth: location.buildDirDepth) : nil,
+                note: problem.map { "report only: \($0) (from \(location.source))" }
+                    ?? "from \(location.source); shared by every project, so it never goes stale: clean incremental/ regularly"
+            )
+        }
     }
 
     // MARK: Package managers
 
-    private static func packageManagers(_ environment: [String: String]) -> [CacheDefinition] {
+    private static func packageManagers(_ environment: [String: String], home: String) -> [CacheDefinition] {
         let goModCache = environment["GOMODCACHE"]
             ?? environment["GOPATH"].flatMap { $0.split(separator: ":").first.map { "\($0)/pkg/mod" } }
             ?? "~/go/pkg/mod"
@@ -31,7 +143,8 @@ public enum CacheCatalog {
             ),
             CacheDefinition(
                 id: "pnpm-store", title: "pnpm store", category: .packageManager, safety: .safe,
-                paths: ["~/Library/pnpm/store", "~/.local/share/pnpm/store", "~/.pnpm-store"],
+                paths: trusted(pnpmStoreDirectories(environment: environment, home: home), home: home, environment: environment, layout: .pnpmStore)
+                    + ["~/Library/pnpm/store", "~/.local/share/pnpm/store", "~/.pnpm-store"],
                 nativeCommand: NativeCleanCommand(["pnpm"], ["store", "prune"], timeoutSeconds: 300),
                 note: "store files are hard-linked into node_modules; prune only removes unreferenced packages"
             ),
@@ -138,7 +251,7 @@ public enum CacheCatalog {
 
     // MARK: Build & dev tools
 
-    private static let build: [CacheDefinition] = [
+    private static func build(home: String, environment: [String: String]) -> [CacheDefinition] { [
         CacheDefinition(
             id: "xcode-derived-data", title: "Xcode DerivedData", category: .build, safety: .safe,
             paths: ["~/Library/Developer/Xcode/DerivedData"],
@@ -173,8 +286,17 @@ public enum CacheCatalog {
         ),
         CacheDefinition(
             id: "terraform-plugins", title: "Terraform plugin cache", category: .build, safety: .regenerable,
-            paths: ["~/.terraform.d/plugin-cache"],
+            paths: trusted(TerraformPluginCacheCheck.pluginCacheDirectory(home: home, environment: environment).map { [$0] } ?? [],
+                           home: home, environment: environment, layout: .terraformPluginCache)
+                + ["~/.terraform.d/plugin-cache"],
+            itemRule: .terraformProviders,
             note: "existing .terraform dirs may link here; run `terraform init` again"
+        ),
+        CacheDefinition(
+            id: "sccache", title: "sccache compiler cache", category: .build, safety: .safe,
+            paths: trusted([CargoBuildCacheCheck.sccacheDirectory(home: home, environment: environment)],
+                           home: home, environment: environment, layout: .sccache),
+            note: "size-capped (SCCACHE_CACHE_SIZE); refilled by the next builds"
         ),
         CacheDefinition(
             id: "security-scanners", title: "Security scanner databases", category: .build, safety: .safe,
@@ -204,7 +326,7 @@ public enum CacheCatalog {
             id: "flutter-engine", title: "Flutter engine cache", category: .build, safety: .safe,
             paths: ["~/Library/Caches/flutter_engine"]
         ),
-    ]
+    ] }
 
     // MARK: Editors & IDEs
 
@@ -255,7 +377,22 @@ public enum CacheCatalog {
             paths: ["~/Library/Caches"], fallback: .none,
             note: "per-app caches not in the catalog (report only)"
         ),
+        appData,
     ]
+
+    /// Everything in Application Support no other entry claims, broken down by app (report only).
+    /// Contacts, iOS backups and Apple's own folders are never read: macOS guards them.
+    static var appData: CacheDefinition {
+        var definition = CacheDefinition(
+            id: "app-data", title: "App data (Application Support)", category: .system, safety: .userData,
+            paths: ["~/Library/Application Support"], fallback: .none,
+            itemRule: .largeChildren(minimumBytes: 2_000_000_000),
+            note: "apps' own data (chats, models, projects); report only"
+        )
+        definition.excludedChildren = ["AddressBook", "MobileSync", "CallHistoryDB", "CallHistoryTransactions",
+                                       "Knowledge", "com.apple.*", "FileProvider", "CloudDocs"]
+        return definition
+    }
 
     // MARK: AI models
 

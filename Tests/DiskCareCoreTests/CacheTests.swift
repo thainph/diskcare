@@ -138,7 +138,7 @@ import Testing
         try write(root + "/b/browser@abc/state", bytes: 100)
         try write(root + "/.links/xyz", bytes: 10)
 
-        let definition = try #require(CacheCatalog.definitions().first { $0.id == "playwright" })
+        let definition = try #require(CacheCatalog.definitions(environment: [:], home: home).first { $0.id == "playwright" })
         let report = scan([definition], home: home)
         let entry = try #require(report.entry(id: "playwright"))
         let recommended = Set(entry.recommendedItems.map(\.name))
@@ -149,7 +149,8 @@ import Testing
         #expect(entry.items.contains { $0.name == "b" && !$0.isRecommended })
         #expect(!entry.items.contains { $0.name.hasPrefix(".") })
         #expect(entry.items.first { $0.name == "chromium-1228" }?.id == "playwright/chromium-1228")
-        #expect(Set(report.allSafeIDs) == Set(entry.recommendedItems.map(\.id)))
+        // Old revisions mean a re-download: suggested, but never picked by "Select all safe".
+        #expect(report.allSafeIDs.isEmpty && entry.recommendedItems.allSatisfy { !$0.isPreselectable })
 
         // Cleaning one item deletes only that directory.
         let targets = try CacheCleaner.targets(ids: ["playwright/chromium-1228"], in: report)
@@ -178,7 +179,7 @@ import Testing
         defer { try? fm.removeItem(atPath: home) }
         try write(home + "/Library/Caches/ms-playwright/chromium-1/x", modified: daysAgo(100))
         try write(home + "/Library/Caches/ms-playwright/chromium-2/x", modified: daysAgo(100))
-        let definition = try #require(CacheCatalog.definitions().first { $0.id == "playwright" })
+        let definition = try #require(CacheCatalog.definitions(environment: [:], home: home).first { $0.id == "playwright" })
         let report = scan([definition], home: home)
         let targets = try CacheCleaner.targets(ids: ["playwright/chromium-1", "playwright"], in: report)
         #expect(targets.map(\.id) == ["playwright"])

@@ -10,6 +10,7 @@ struct DiskCareApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)
+                .id(model.settings.language)
         } label: {
             MenuBarLabel(model: model)
         }
@@ -21,7 +22,13 @@ struct DiskCareApp: App {
         .defaultSize(width: 980, height: 680)
         .defaultLaunchBehavior(.suppressed)
 
-        Window("DiskCare Settings", id: SettingsView.windowID) {
+        Window(L("Welcome to DiskCare", "Chào mừng đến với DiskCare"), id: WelcomeView.windowID) {
+            WelcomeView(model: model)
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
+        Window(L("DiskCare Settings", "Cài đặt DiskCare"), id: SettingsView.windowID) {
             SettingsView(settings: model.settings, onChange: { model.startSchedule() })
         }
         .windowResizability(.contentSize)
@@ -41,8 +48,13 @@ private struct MenuBarLabel: View {
     var body: some View {
         Label(model.menuTitle, systemImage: model.isLowOnSpace ? "externaldrive.badge.exclamationmark" : "internaldrive")
             .labelStyle(.titleAndIcon)
+            .accessibilityLabel(model.freeBytes.map { L("DiskCare, \(ByteFormat.string($0)) free", "DiskCare, còn trống \(ByteFormat.string($0))") } ?? "DiskCare")
             .task {
                 model.startOnce()
+                if !model.settings.hasCompletedWelcome {
+                    openWindow(id: WelcomeView.windowID)
+                    NSApp.activate()
+                }
                 await SnapshotDebug.run(model: model) { openWindow(id: MainWindow.windowID) }
             }
             .onReceive(NotificationCenter.default.publisher(for: .showMainWindow)) { _ in
@@ -75,16 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppModel {
-    /// First launch: permissions, schedule and an initial scan.
+    /// Once per launch: schedule, space monitor and a catch-up scan when the last one is too old.
+    /// Notification permission is asked by the welcome screen on first run.
     func startOnce() {
         guard !didStart else { return }
         didStart = true
-        requestNotificationPermission()
+        if settings.hasCompletedWelcome { requestNotificationPermission() }
         startSchedule()
-        // Show the previous results instantly; refresh quietly in the background.
-        let age = restoreSnapshot()
-        if age == nil || age! > 15 * 60 {
-            scan(priority: .background)
-        }
+        startSpaceMonitor()
+        // Show the previous results instantly; refresh in the background only when they are stale.
+        restoreSnapshot()
+        scanIfDue()
     }
 }

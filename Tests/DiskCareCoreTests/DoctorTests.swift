@@ -126,32 +126,38 @@ import Testing
         ])
         #expect(TerraformPluginCacheCheck.estimatedSavings(report) == 2 * gb)
         #expect(TerraformPluginCacheCheck.estimatedSavings(nil) == nil)
-        #expect(CargoSharedTargetCheck.estimatedSavings(report) == 0)
+        #expect(CargoBuildCacheCheck.estimatedSavings(report) == 0)
     }
 
     // MARK: Cargo
 
-    @Test func cargoInsertsUnderExistingBuildTable() throws {
+    @Test func cargoSuggestsSccacheAndAddsItUnderExistingBuildTable() throws {
         let home = try TempHome()
+        try home.write("bin/sccache", "#!/bin/sh\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: home.path + "/bin/sccache")
         try home.write(".cargo/config.toml", "[net]\ngit-fetch-with-cli = true\n\n[build]\njobs = 8\n\n[alias]\nb = \"build\"\n")
-        let check = CargoSharedTargetCheck()
-        #expect(check.evaluate(context(home)).isAutoFixable)
+        let environment = ["PATH": home.path + "/bin"]
+        let check = CargoBuildCacheCheck()
+        let before = check.evaluate(context(home, environment: environment))
+        #expect(before.status == .info && before.isAutoFixable)
 
-        let applied = try #require(try Doctor.apply(check.id, context: context(home)))
+        let applied = try #require(try Doctor.apply(check.id, context: context(home, environment: environment)))
         let backup = try #require(applied.backupPath)
         #expect(try String(contentsOfFile: backup, encoding: .utf8).hasPrefix("[net]"))
         let text = try #require(home.read(".cargo/config.toml"))
         #expect(text.components(separatedBy: "[build]").count == 2)
-        #expect(text.contains("[build]\ntarget-dir = \"\(home.path)/.cargo/target-shared\""))
-        #expect(CargoConfig.targetDir(in: text) == home.path + "/.cargo/target-shared")
-        #expect(check.evaluate(context(home)).status == .ok)
-        #expect(try Doctor.apply(check.id, context: context(home)) == nil)
+        #expect(text.contains("[build]\nrustc-wrapper = \"\(home.path)/bin/sccache\""))
+        #expect(CargoConfig.targetDir(in: text) == nil, "no shared target dir any more")
+        #expect(check.evaluate(context(home, environment: environment)).status == .ok)
+        #expect(try Doctor.apply(check.id, context: context(home, environment: environment)) == nil)
+        #expect(check.managedLocations(context(home, environment: environment)) == [home.path + "/Library/Caches/Mozilla.sccache"])
     }
 
     @Test func cargoAppendsBuildTableOrCreatesFile() throws {
-        #expect(CargoConfig.merged(nil, targetDir: "/t")?.hasPrefix("[build]\ntarget-dir = \"/t\"") == true)
-        let appended = try #require(CargoConfig.merged("[net]\nretry = 3", targetDir: "/t"))
-        #expect(appended.hasPrefix("[net]\nretry = 3\n\n[build]\ntarget-dir = \"/t\""))
+        #expect(CargoConfig.merged(nil, key: "rustc-wrapper", value: "/s", comment: "c")?.hasPrefix("[build]\nrustc-wrapper = \"/s\"") == true)
+        let appended = try #require(CargoConfig.merged("[net]\nretry = 3", key: "rustc-wrapper", value: "/s", comment: "c"))
+        #expect(appended.hasPrefix("[net]\nretry = 3\n\n[build]\nrustc-wrapper = \"/s\""))
+        #expect(CargoConfig.merged("[build]\nrustc-wrapper = \"/x\"", key: "rustc-wrapper", value: "/s", comment: "c") == nil)
     }
 
     @Test func cargoDetectsAllTargetDirSpellings() {
@@ -162,11 +168,16 @@ import Testing
         #expect(CargoConfig.targetDir(in: "[build]\n# target-dir = \"/no\"") == nil)
     }
 
-    @Test func cargoUsesLegacyConfigAndCargoHome() throws {
+    @Test func cargoSharedTargetDirIsReportedNotRecommended() throws {
         let home = try TempHome()
-        try home.write(".cargo/config", "[build]\ntarget-dir = \"/x\"\n")
-        #expect(CargoSharedTargetCheck().evaluate(context(home)).status == .ok)
-        let custom = CargoSharedTargetCheck().configPath(context(home, environment: ["CARGO_HOME": "/opt/cargo"]))
+        let target = home.path + "/shared"
+        try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
+        try home.write(".cargo/config", "[build]\ntarget-dir = \"\(target)\"\n")  // legacy file name
+        let result = CargoBuildCacheCheck().evaluate(context(home))
+        #expect(result.status == .info && !result.isAutoFixable)
+        #expect(result.fix?.contains("never goes stale") == true)
+        #expect(result.details.contains { $0.contains("shared build dir") })
+        let custom = CargoBuildCacheCheck().configPath(context(home, environment: ["CARGO_HOME": "/opt/cargo"]))
         #expect(custom == "/opt/cargo/config.toml")
     }
 

@@ -18,6 +18,8 @@ public struct CacheCleanTarget: Sendable, Codable, Identifiable {
     public let bytes: Int64
     public let nativeCommand: NativeCleanCommand?
     public let fallback: CacheFallback
+    /// Lock held (flock) while an item is moved aside, so a concurrent build is never cut in half.
+    public var lockFile: String? = nil
 
     /// Human-readable plan for this target in the given mode.
     public func action(mode: CleanupMode, resolver: CommandResolver) -> String {
@@ -45,7 +47,7 @@ public struct CacheCleanResult: Sendable, Codable {
     public let freeBytesBefore: Int64?
     public let freeBytesAfter: Int64?
 
-    /// Measured change in free space (only meaningful in delete mode).
+    /// Measured change in `df` free space (only meaningful in delete mode).
     public var freedBytes: Int64? {
         guard let freeBytesBefore, let freeBytesAfter else { return nil }
         return freeBytesAfter - freeBytesBefore
@@ -56,9 +58,11 @@ public enum CacheCleanError: Error, CustomStringConvertible {
     case unknownID(String)
     case userData(String)
     case notCleanable(String)
+    case blocked(String, String)
 
     public var description: String {
         switch self {
+        case .blocked(let id, let reason): "\(id) cannot be cleaned: \(reason)"
         case .unknownID(let id): "unknown cache id: \(id)"
         case .userData(let id): "\(id) holds user data and is never cleaned by DiskCare"
         case .notCleanable(let id): "\(id) cannot be cleaned (no cleanup command available)"
@@ -68,7 +72,8 @@ public enum CacheCleanError: Error, CustomStringConvertible {
 
 public enum CacheCleaner {
     /// Builds targets from ids (`homebrew`, `playwright/chromium-1228`). An item whose entry is also
-    /// selected is dropped. Throws for unknown ids and for anything that must not be cleaned.
+    /// selected, or that lies inside another selected item, is dropped. Throws for unknown ids and for
+    /// anything that must not be cleaned.
     public static func targets(ids: [String], in report: CacheReport) throws -> [CacheCleanTarget] {
         var targets: [CacheCleanTarget] = []
         var seen = Set<String>()
@@ -82,17 +87,21 @@ public enum CacheCleaner {
                 ))
             } else if let item = report.item(id: id), let entry = report.entry(id: item.entryID) {
                 guard entry.safety.isCleanable else { throw CacheCleanError.userData(id) }
+                if let reason = item.blockedReason { throw CacheCleanError.blocked(id, reason) }
                 targets.append(CacheCleanTarget(
                     id: item.id, kind: .item, title: "\(entry.title): \(item.name)", safety: entry.safety, paths: [item.path],
-                    containers: entry.paths, bytes: item.bytes, nativeCommand: nil, fallback: .deleteContents
+                    containers: entry.paths, bytes: item.bytes, nativeCommand: nil, fallback: .deleteContents, lockFile: item.lockFile
                 ))
             } else {
                 throw CacheCleanError.unknownID(id)
             }
         }
         let wholeEntries = Set(targets.filter { $0.kind == .entry }.map(\.id))
+        let itemPaths = targets.filter { $0.kind == .item }.compactMap(\.paths.first)
         return targets.filter { target in
-            target.kind == .entry || !wholeEntries.contains(where: { target.id.hasPrefix($0 + "/") })
+            guard target.kind == .item, let path = target.paths.first else { return true }
+            return !wholeEntries.contains(where: { target.id.hasPrefix($0 + "/") })
+                && !itemPaths.contains(where: { path.hasPrefix($0 + "/") })
         }
     }
 
@@ -102,12 +111,28 @@ public enum CacheCleaner {
         mode: CleanupMode = .delete,
         resolver: CommandResolver = .standard(),
         home: String = NSHomeDirectory(),
+        log: DeletionLog? = nil,
         progress: (@Sendable (CacheCleanOutcome) -> Void)? = nil
     ) -> CacheCleanResult {
+        let log = log ?? DeletionLog(path: home + "/Library/Application Support/DiskCare/deletions.jsonl")
         let freeBefore = Cleaner.availableCapacity(at: home)
         let results = LockedArray<CacheCleanOutcome?>(repeating: nil, count: targets.count)
         DispatchQueue.concurrentPerform(iterations: targets.count) { index in
-            let outcome = clean(targets[index], mode: mode, resolver: resolver, home: home)
+            // Logged before as well, so a crash mid-delete still leaves a trace.
+            let target = targets[index]
+            for path in target.paths {
+                log.append(DeletionRecord(
+                    path: path, bytes: target.paths.count == 1 ? target.bytes : 0, mode: mode.rawValue,
+                    source: target.kind == .item ? "cache-item" : "cache-entry", result: "started"
+                ))
+            }
+            let outcome = clean(target, mode: mode, resolver: resolver, home: home)
+            for path in outcome.target.paths {
+                log.append(DeletionRecord(
+                    path: path, bytes: outcome.target.paths.count == 1 ? outcome.target.bytes : 0, mode: outcome.action,
+                    source: outcome.target.kind == .item ? "cache-item" : "cache-entry", result: outcome.error ?? "ok"
+                ))
+            }
             results[index] = outcome
             progress?(outcome)
         }
@@ -134,11 +159,31 @@ public enum CacheCleaner {
 
         if target.kind == .item {
             let path = target.paths.first ?? ""
-            if let problem = Cleaner.validate(path, roots: target.containers) {
+            // Containers come from the report: they must themselves be ordinary cache locations.
+            let emptyCheck = DeletionGuard(roots: [], home: home)
+            if let problem = target.containers.lazy.compactMap({ emptyCheck.checkEmptying($0) }).first {
+                return outcome("skipped", error: "cache location refused: \(problem)")
+            }
+            let verdict = DeletionGuard(roots: target.containers, home: home).approveRemoval(path)
+            if let problem = verdict.problem {
                 return outcome("skipped", error: problem)
             }
             do {
-                try remove(path, mode: mode)
+                if let lockFile = target.lockFile {
+                    // Re-checked now: the report may be hours old (or restored from disk).
+                    if let reason = InUseIndex(runningExecutables: InUseIndex.runningExecutablePaths(), commandLinks: [], referencingFiles: [])
+                        .runningReason(under: path) {
+                        return outcome("skipped", error: reason)
+                    }
+                    try Cleaner.removeTree(path, mode: mode, expected: verdict.identity, holdingLock: lockFile)
+                } else if mode == .trash {
+                    try Cleaner.trash(path, expected: verdict.identity)
+                } else if Cleaner.isStagingName((path as NSString).lastPathComponent) {
+                    try Cleaner.verify(path, expected: verdict.identity)
+                    try Cleaner.removeStaged(path, original: path)
+                } else {
+                    try Cleaner.removeTree(path, expected: verdict.identity)
+                }
                 return outcome(mode == .trash ? "trash dir" : "delete dir")
             } catch {
                 return outcome("delete dir", error: "\(error)")
@@ -165,37 +210,32 @@ public enum CacheCleaner {
         let action = (commandResult != nil ? "command failed, " : "") + (mode == .trash ? "trash contents" : "delete contents")
         var errors: [String] = []
         for path in target.paths {
-            if let problem = checkCacheRoot(path, home: home) {
+            let verdict = DeletionGuard(roots: [], home: home).approveEmptying(path)
+            if let problem = verdict.problem {
                 errors.append("\(path.abbreviatingHome): \(problem)")
                 continue
             }
-            errors += deleteContents(of: path, mode: mode)
+            errors += deleteContents(of: path, mode: mode, expected: verdict.identity)
         }
         return outcome(action, commandResult, error: errors.isEmpty ? nil : errors.prefix(3).joined(separator: "; "))
     }
 
     /// Last line of defence before emptying a directory: it must still be a real directory and not
-    /// one of the broad locations that merely contain caches.
+    /// one of the broad locations that merely contain caches (nor an alias or parent of one).
     static func checkCacheRoot(_ path: String, home: String) -> String? {
-        let normalized = ScanOptions.normalize(path)
-        guard normalized == path, path.hasPrefix("/") else { return "path is not normalized" }
-        let protected = ["/", "/Users", home, home + "/Library", home + "/Library/Caches", home + "/Library/Application Support",
-                         home + "/.cache", home + "/.config", home + "/.local", home + "/.local/share", home + "/Library/Developer"]
-        guard !protected.contains(path) else { return "refusing to empty a top-level directory" }
-        guard path.split(separator: "/").count >= 3 else { return "path too shallow" }
-        guard CachePaths.isRealDirectory(path) else { return "not a directory (missing or symlink?)" }
-        return nil
+        DeletionGuard(roots: [], home: home).checkEmptying(path)
     }
 
     /// Deletes every child of `root` and keeps `root` itself. Read-only trees (Go modules) are
-    /// made writable and retried once.
-    static func deleteContents(of root: String, mode: CleanupMode) -> [String] {
+    /// made writable and retried once. Stops if `root` stops being the approved directory.
+    static func deleteContents(of root: String, mode: CleanupMode, expected: DeletionGuard.FileID? = nil) -> [String] {
         var errors: [String] = []
         for attempt in 0..<2 {
             errors = []
             let names = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
             for name in names {
                 do {
+                    try Cleaner.verify(root, expected: expected)
                     try remove(root + "/" + name, mode: mode)
                 } catch {
                     errors.append("\(name): \(error)")

@@ -295,6 +295,7 @@ final class Worker: @unchecked Sendable {
         }
 
         record(job, totals: totals, markers: markers)
+        guard options.progress?.isCancelled != true else { return [] }
         return children(of: job, names: childNames, markers: markers)
     }
 

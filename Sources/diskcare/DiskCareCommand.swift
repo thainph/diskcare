@@ -8,7 +8,7 @@ struct DiskCareCommand: ParsableCommand {
         commandName: "diskcare",
         abstract: "Find and clean disk space wasted by build artifacts, dependencies and stale worktrees.",
         version: DiskCareVersion.current,
-        subcommands: [Scan.self, Clean.self, Caches.self, Docker.self, History.self, Watch.self, DoctorCommand.self],
+        subcommands: [Scan.self, Clean.self, Caches.self, Docker.self, History.self, Explain.self, Watch.self, DoctorCommand.self],
         defaultSubcommand: Scan.self
     )
 }
@@ -80,7 +80,7 @@ struct Scan: ParsableCommand {
         let report = DiskAnalyzer.analyze(scan.options, inspectGit: !noGit)
         if !noRecord {
             do {
-                try HistoryStore(path: database).record(report: report, freeBytes: Cleaner.availableCapacity(at: NSHomeDirectory()))
+                try HistoryStore(path: database).record(report: report, freeBytes: Cleaner.importantAvailableCapacity(at: NSHomeDirectory()))
             } catch {
                 FileHandle.standardError.write(Data("warning: could not record scan history: \(error)\n".utf8))
             }

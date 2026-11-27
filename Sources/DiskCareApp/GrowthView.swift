@@ -16,7 +16,13 @@ final class GrowthModel {
     }
 
     let days: Int
+    /// Days of periodic free-space samples kept for the Insights chart.
+    let historyDays: Int
     private(set) var report: GrowthReport?
+    /// Periodic free-space samples of the last `historyDays`, oldest first.
+    private(set) var freeHistory: [FreeSample] = []
+    /// Artifacts and caches that grew the most over `days`: the same list space alerts name.
+    private(set) var sources: [GrowthSource] = []
     private(set) var liveAlerts: [LiveAlert] = []
     private(set) var errorMessage: String?
 
@@ -27,12 +33,14 @@ final class GrowthModel {
     init(
         store: HistoryStore? = try? HistoryStore(),
         days: Int = 7,
+        historyDays: Int = 30,
         configuration: GrowthWatcher.Configuration = GrowthWatcher.Configuration()
     ) {
         self.store = store
         self.days = days
+        self.historyDays = historyDays
         self.configuration = configuration
-        if store == nil { errorMessage = "History database unavailable" }
+        if store == nil { errorMessage = L("History database unavailable", "Không mở được cơ sở dữ liệu lịch sử") }
         reload()
     }
 
@@ -46,23 +54,70 @@ final class GrowthModel {
                     _ = try store.record(report: report, freeBytes: freeBytes, dockerBytes: dockerBytes)
                 }.value
             } catch {
-                errorMessage = "Could not record scan: \(error)"
+                errorMessage = L("Could not record scan: \(error)", "Không ghi được lần quét: \(error)")
             }
             reload()
         }
         startWatching(report, excludedPaths: excludedPaths)
     }
 
-    func reload() {
+    /// Records cache entry sizes after a cache scan (history for growth alerts).
+    func didScanCaches(_ report: CacheReport) {
         guard let store else { return }
-        let days = days
         Task {
             do {
-                report = try await Task.detached(priority: .utility) {
-                    try GrowthAnalyzer.analyze(store, days: days)
-                }.value
+                try await Task.detached(priority: .utility) { _ = try store.record(caches: report) }.value
             } catch {
-                errorMessage = "Could not read history: \(error)"
+                errorMessage = L("Could not record cache sizes: \(error)", "Không ghi được dung lượng cache: \(error)")
+            }
+            reload()
+        }
+    }
+
+    /// Records a periodic free-space sample and returns the updated trend.
+    func record(_ sample: FreeSample) async -> SpaceForecast? {
+        guard let store else { return nil }
+        do {
+            let forecast = try await Task.detached(priority: .utility) {
+                try store.record(sample: sample)
+                return SpaceForecast.make(samples: try store.freeSamples(since: sample.date.addingTimeInterval(-14 * 86_400)), now: sample.date)
+            }.value
+            let start = sample.date.addingTimeInterval(-Double(historyDays) * 86_400)
+            freeHistory = freeHistory.filter { $0.date >= start } + [sample]
+            return forecast
+        } catch {
+            errorMessage = L("Could not record free space: \(error)", "Không ghi được dung lượng trống: \(error)")
+            return nil
+        }
+    }
+
+    /// Artifacts and caches that grew the most over the period, for notifications.
+    func fastestGrowing(limit: Int = 3) async -> [GrowthSource] {
+        guard let store else { return [] }
+        let days = days
+        return (try? await Task.detached(priority: .utility) {
+            try GrowthAnalyzer.fastestGrowing(store, days: days, limit: limit)
+        }.value) ?? []
+    }
+
+    func reload() {
+        guard let store else { return }
+        let days = days, historyDays = historyDays
+        Task {
+            do {
+                let loaded = try await Task.detached(priority: .utility) {
+                    let now = Date()
+                    return (
+                        report: try GrowthAnalyzer.analyze(store, days: days, now: now),
+                        sources: try GrowthAnalyzer.fastestGrowing(store, days: days, limit: 10, now: now),
+                        history: try store.freeSamples(since: now.addingTimeInterval(-Double(historyDays) * 86_400))
+                    )
+                }.value
+                report = loaded.report
+                sources = loaded.sources
+                freeHistory = loaded.history
+            } catch {
+                errorMessage = L("Could not read history: \(error)", "Không đọc được lịch sử: \(error)")
             }
         }
     }
@@ -96,108 +151,198 @@ final class GrowthModel {
         if liveAlerts.count > 5 { liveAlerts.removeLast(liveAlerts.count - 5) }
 
         let content = UNMutableNotificationContent()
-        content.title = alert.title
-        content.body = alert.message
+        content.title = alert.localizedTitle
+        content.body = alert.localizedMessage
         content.sound = .default
         let request = UNNotificationRequest(identifier: "growth:\(alert.measurement.path)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
 }
 
+/// Growth between the last scans plus live alerts; compact enough for an Overview card.
 struct GrowthView: View {
     var model: GrowthModel
     var maxRows = 5
     var showsHeader = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             if showsHeader { HStack(alignment: .firstTextBaseline) {
-                Text("Free space").font(.headline)
-                Text("last \(model.days) days").font(.caption).foregroundStyle(.secondary)
+                Text(L("Free space", "Dung lượng trống")).font(.headline)
+                Text(L("last \(model.days) days", "\(model.days) ngày qua")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if let change = model.report?.freeSpaceChange {
-                    Text("free \(signedBytes(change))")
+                    Text(L("free \(signedBytes(change))", "trống \(signedBytes(change))"))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(change < 0 ? .orange : .secondary)
                 }
             } }
-            if let points = model.report?.freeSpace, points.count > 1 {
+            if showsHeader, let points = model.report?.freeSpace, points.count > 1 {
                 FreeSpaceSparkline(points: points)
             }
-            if !model.liveAlerts.isEmpty { liveAlerts }
+            if !model.liveAlerts.isEmpty { LiveAlertsView(model: model) }
             entries
             if let error = model.errorMessage {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red)
             }
         }
-    }
-
-    private var liveAlerts: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(model.liveAlerts) { item in
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(item.alert.message).font(.caption).lineLimit(2)
-                        Text(item.date, style: .relative).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    revealButton(item.alert.measurement.path)
-                }
-            }
-            Button("Dismiss") { model.dismissAlerts() }
-                .buttonStyle(.link).font(.caption)
-        }
-        .padding(8)
-        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
     private var entries: some View {
         if let report = model.report {
             if report.baseline == nil {
-                Text(report.latest == nil ? "No scan history yet." : "Growth appears after the next scan.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(report.latest == nil
+                     ? L("No scan history yet.", "Chưa có lịch sử quét.")
+                     : L("Growth appears after the next scan.", "Mức tăng sẽ hiện sau lần quét tới."))
+                    .font(.callout).foregroundStyle(.secondary)
             } else if report.top.isEmpty {
-                Text("Nothing grew by more than 100 MB in this period.").font(.caption).foregroundStyle(.secondary)
+                Text(L("Nothing grew by more than 100 MB in this period.", "Không có gì tăng quá 100 MB trong khoảng này."))
+                    .font(.callout).foregroundStyle(.secondary)
             } else {
                 let alerted = Set(report.alerts.map(\.path))
-                ForEach(report.top.prefix(maxRows)) { entry in
-                    row(entry, alerted: alerted.contains(entry.path))
+                let rows = Array(report.top.prefix(maxRows))
+                VStack(spacing: 0) {
+                    ForEach(rows) { entry in
+                        if entry.id != rows.first?.id { Divider() }
+                        GrowthRow(
+                            title: shortPath(entry.path),
+                            subtitle: "\(entry.kind?.rawValue ?? L("workspace", "thư mục làm việc")) · \(entry.isNew ? L("new", "mới") : ByteFormat.string(entry.bytesThen)) → \(ByteFormat.string(entry.bytesNow))",
+                            delta: entry.delta, path: entry.path, emphasized: alerted.contains(entry.path)
+                        )
+                    }
                 }
             }
         }
     }
+}
 
-    private func row(_ entry: GrowthEntry, alerted: Bool) -> some View {
-        HStack(spacing: 8) {
-            Text(signedBytes(entry.delta))
-                .font(.callout.monospacedDigit().weight(alerted ? .semibold : .regular))
-                .foregroundStyle(alerted ? .orange : .primary)
-                .frame(width: 72, alignment: .trailing)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(shortPath(entry.path)).font(.callout).lineLimit(1).truncationMode(.head)
-                Text("\(entry.kind?.rawValue ?? "workspace") · \(entry.isNew ? "new" : ByteFormat.string(entry.bytesThen)) → \(ByteFormat.string(entry.bytesNow))")
-                    .font(.caption).foregroundStyle(.secondary)
+/// Fastest-growing artifacts and caches (the list space alerts name), for the Insights page.
+struct GrowingFastestList: View {
+    var model: GrowthModel
+    var maxRows = 6
+    /// Display name of a cache entry id (`homebrew` → "Homebrew").
+    var cacheTitle: (String) -> String? = { _ in nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !model.liveAlerts.isEmpty { LiveAlertsView(model: model) }
+            if model.sources.isEmpty {
+                Text(emptyText).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                let rows = Array(model.sources.prefix(maxRows))
+                VStack(spacing: 0) {
+                    ForEach(rows) { source in
+                        if source.id != rows.first?.id { Divider() }
+                        row(source)
+                    }
+                }
             }
-            Spacer(minLength: 0)
-            revealButton(entry.path)
+            if let error = model.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red)
+            }
         }
-        .help(entry.path)
     }
 
-    private func revealButton(_ path: String) -> some View {
+    private func row(_ source: GrowthSource) -> some View {
+        let then = source.bytesThen > 0 ? ByteFormat.string(source.bytesThen) : L("new", "mới")
+        switch source.origin {
+        case .cache:
+            return GrowthRow(
+                title: cacheTitle(source.name) ?? source.name,
+                subtitle: L("Cache", "Cache") + " · \(then) → \(ByteFormat.string(source.bytesNow))",
+                delta: source.delta, path: nil, emphasized: false
+            )
+        case .artifact:
+            return GrowthRow(
+                title: shortPath(source.name, components: 2),
+                subtitle: "\(source.name.abbreviatingHome) · \(then) → \(ByteFormat.string(source.bytesNow))",
+                delta: source.delta, path: source.name, emphasized: false
+            )
+        }
+    }
+
+    private var emptyText: String {
+        guard let report = model.report, report.baseline != nil else {
+            return L("Growth appears after two scans a few days apart.", "Mức tăng sẽ hiện sau hai lần quét cách nhau vài ngày.")
+        }
+        return L("Nothing grew by more than 100 MB in the last \(model.days) days.",
+                 "Không có gì tăng quá 100 MB trong \(model.days) ngày qua.")
+    }
+}
+
+/// One growth line: name, detail, signed size change and Reveal in Finder.
+private struct GrowthRow: View {
+    let title: String
+    let subtitle: String
+    let delta: Int64
+    let path: String?
+    /// Passed a growth alert threshold: bold with a warning icon, not color alone.
+    let emphasized: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).lineLimit(1).truncationMode(.head)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            if emphasized {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    .help(L("Grew faster than usual", "Tăng nhanh bất thường"))
+                    .accessibilityLabel(L("Grew faster than usual", "Tăng nhanh bất thường"))
+            }
+            Text(signedBytes(delta))
+                .font(.callout.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(emphasized ? .orange : .primary)
+            if let path { RevealInFinderButton(path: path) }
+        }
+        .padding(.vertical, 8)
+        .help(path ?? title)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Live FSEvents alerts since launch, newest first.
+private struct LiveAlertsView: View {
+    var model: GrowthModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.liveAlerts) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.alert.localizedMessage).font(.callout).lineLimit(2)
+                        Text(item.date, style: .relative).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    RevealInFinderButton(path: item.alert.measurement.path)
+                }
+            }
+            Button(L("Dismiss", "Bỏ qua")) { model.dismissAlerts() }
+                .buttonStyle(.link).font(.caption)
+        }
+        .padding(10)
+        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+/// Icon-only button revealing `path` in Finder, labelled for VoiceOver.
+struct RevealInFinderButton: View {
+    let path: String
+
+    var body: some View {
         Button {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         } label: {
-            Image(systemName: "magnifyingglass")
+            Image(systemName: "magnifyingglass").frame(width: 22, height: 22).contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help("Show in Finder")
-    }
-
-    private func shortPath(_ path: String) -> String {
-        path.split(separator: "/").suffix(3).joined(separator: "/")
+        .help(L("Reveal in Finder", "Hiện trong Finder"))
+        .accessibilityLabel(L("Reveal \(path.abbreviatingHome) in Finder", "Hiện \(path.abbreviatingHome) trong Finder"))
     }
 }
 
@@ -227,10 +372,48 @@ private struct FreeSpaceSparkline: View {
             }
         }
         .frame(height: 44)
-        .accessibilityLabel("Free space trend")
+        .accessibilityLabel(L("Free space trend", "Xu hướng dung lượng trống"))
+        .accessibilityValue(summary)
+    }
+
+    private var summary: String {
+        guard let first = points.first, let last = points.last else { return "" }
+        return L("From \(ByteFormat.string(first.freeBytes)) to \(ByteFormat.string(last.freeBytes))",
+                 "Từ \(ByteFormat.string(first.freeBytes)) đến \(ByteFormat.string(last.freeBytes))")
     }
 }
 
-private func signedBytes(_ bytes: Int64) -> String {
+extension GrowthWatcher.Alert {
+    /// `alert.title` in the interface language.
+    var localizedTitle: String {
+        let name = URL(fileURLWithPath: measurement.path).lastPathComponent
+        return L("\(name) is growing fast", "\(name) đang tăng nhanh")
+    }
+
+    /// `alert.message` in the interface language.
+    var localizedMessage: String {
+        let name = measurement.path.abbreviatingHome
+        let now = ByteFormat.string(measurement.bytes)
+        switch reason {
+        case .crossedSize(let threshold):
+            return L("\(name) is now \(now) (over \(ByteFormat.string(threshold))).",
+                     "\(name) hiện đã \(now) (vượt \(ByteFormat.string(threshold))).")
+        case .fastGrowth(let bytes, let window):
+            let minutes = Int((window / 60).rounded())
+            let period = minutes >= 60 && minutes % 60 == 0
+                ? L("\(minutes / 60)h", "\(minutes / 60) giờ") : L("\(minutes) min", "\(minutes) phút")
+            return L("\(name) grew \(ByteFormat.string(bytes)) in the last \(period), now \(now).",
+                     "\(name) tăng \(ByteFormat.string(bytes)) trong \(period) qua, hiện \(now).")
+        }
+    }
+}
+
+/// "+1.2 GB" / "−300 MB".
+func signedBytes(_ bytes: Int64) -> String {
     bytes < 0 ? "−" + ByteFormat.string(-bytes) : "+" + ByteFormat.string(bytes)
+}
+
+/// Last `components` path components: enough to recognise a folder without the full path.
+private func shortPath(_ path: String, components: Int = 3) -> String {
+    path.split(separator: "/").suffix(components).joined(separator: "/")
 }

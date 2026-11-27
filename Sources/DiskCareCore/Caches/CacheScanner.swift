@@ -11,6 +11,12 @@ public enum CacheScanner {
         public var workerCount: Int?
         public var priority: ScanPriority
         public var progress: ScanProgress?
+        /// What points into build output; nil = take a snapshot when a Cargo build dir is measured.
+        public var inUse: InUseIndex?
+        /// `.terraform` dirs from a project scan; nil = unknown, so no provider version is recommended.
+        public var terraformDirs: [String]?
+        /// Project roots (for `.vscode/settings.json` references and protection of the roots).
+        public var scanRoots: [String] = []
 
         public init(
             definitions: [CacheDefinition] = CacheCatalog.definitions(),
@@ -41,10 +47,25 @@ public enum CacheScanner {
 
         // Every cache root is excluded from the others, so nested locations
         // (~/Library/Caches vs ~/Library/Caches/Homebrew) are counted once.
-        var scanOptions = ScanOptions(roots: Array(claimed), excludedPaths: claimed, stayOnDevice: true, priority: options.priority, progress: options.progress)
+        let unreadable = Set(options.definitions.flatMap { $0.excludedPaths(home: options.home) })
+        var scanOptions = ScanOptions(roots: Array(claimed), excludedPaths: claimed.union(unreadable), stayOnDevice: true, priority: options.priority, progress: options.progress)
         if let workers = options.workerCount { scanOptions.workerCount = workers }
         let tree = claimed.isEmpty ? nil : FileSystemScanner.scan(scanOptions)
-        let index = TreeIndex(tree: tree, itemRoots: resolved.filter { $0.0.itemRule != nil }.flatMap(\.1))
+        var depths: [String: Int] = [:]
+        for (definition, paths) in resolved {
+            for path in paths { depths[path] = definition.itemRule?.indexDepth ?? TreeIndex.defaultDepth }
+        }
+        let index = TreeIndex(tree: tree, itemRoots: depths)
+        let hasCargo = resolved.contains { definition, paths in
+            if case .cargoProfiles = definition.itemRule { return !paths.isEmpty }
+            return false
+        }
+        var environment = ProcessInfo.processInfo.environment
+        environment["CARGO_HOME"] = CargoBuildLocator.cargoHome(home: options.home, environment: environment)
+        let inUse = options.inUse ?? (hasCargo
+            ? InUseIndex.snapshot(home: options.home, cargoHome: environment["CARGO_HOME"], scanRoots: options.scanRoots) : .empty)
+        let guardrail = DeletionGuard(roots: options.scanRoots, home: options.home, environment: environment)
+        let terraformVersions = options.terraformDirs.map(TerraformUsage.referencedVersions)
 
         let entries = resolved.compactMap { definition, paths -> CacheEntry? in
             let roots = paths.compactMap { index.root(at: $0) }
@@ -59,7 +80,9 @@ public enum CacheScanner {
                 command: definition.nativeCommand.flatMap { options.resolver.resolve($0) != nil ? $0.display : nil },
                 nativeCommand: definition.nativeCommand, fallback: definition.fallback,
                 note: definition.note,
-                items: items(for: definition, roots: roots, index: index, now: options.now)
+                items: (items(for: definition, roots: roots, index: index, now: options.now, inUse: inUse, guardrail: guardrail,
+                              terraformVersions: terraformVersions)
+                    + leftovers(for: definition, roots: roots, index: index)).sorted { $0.bytes > $1.bytes }
             )
         }
         return CacheReport(
@@ -85,7 +108,10 @@ public enum CacheScanner {
 
     // MARK: Items
 
-    static func items(for definition: CacheDefinition, roots: [DirectoryNode], index: TreeIndex, now: Date) -> [CacheItem] {
+    static func items(
+        for definition: CacheDefinition, roots: [DirectoryNode], index: TreeIndex, now: Date,
+        inUse: InUseIndex = .empty, guardrail: DeletionGuard = DeletionGuard(roots: []), terraformVersions: Set<String>? = nil
+    ) -> [CacheItem] {
         guard let rule = definition.itemRule else { return [] }
         let multipleRoots = roots.count > 1
         var candidates: [ItemCandidate] = []
@@ -93,6 +119,11 @@ public enum CacheScanner {
         switch rule {
         case .versions(let ruleDepth, _, _): depth = ruleDepth
         case .projects: depth = 1
+        case .terraformProviders: depth = 4
+        case .largeChildren(let minimumBytes):
+            return largeChildren(definition, minimumBytes: minimumBytes, roots: roots, index: index)
+        case .cargoProfiles(let buildDirDepth):
+            return cargoItems(definition, buildDirDepth: buildDirDepth, roots: roots, index: index, inUse: inUse, guardrail: guardrail)
         }
         for root in roots {
             for node in index.descendants(of: root, depth: depth) {
@@ -114,16 +145,98 @@ public enum CacheScanner {
             marks = olderVersions(candidates, keep: keep, grouping: grouping, now: now)
         case .projects(let staleDays):
             marks = staleProjects(candidates, staleDays: staleDays, now: now)
+        case .terraformProviders:
+            marks = providerVersions(candidates, roots: roots, used: terraformVersions, now: now)
+        case .cargoProfiles, .largeChildren:
+            marks = [:]
         }
         return candidates.map { candidate in
             let mark = marks[candidate.id]
+            // Old versions and stale projects cost a re-download or rebuild: suggested, never preselected.
             return CacheItem(
                 id: candidate.id, entryID: definition.id, name: candidate.name, path: candidate.node.path,
                 bytes: candidate.node.total.bytes, hardlinkedBytes: candidate.node.total.hardlinkedBytes,
                 lastUsedAt: candidate.lastUsedAt, isRecommended: mark?.recommended ?? false, reason: mark?.reason
             )
         }
-        .sorted { $0.bytes > $1.bytes }
+    }
+
+    /// `.diskcare-deleting-*` directories left by an interrupted cleanup: always worth finishing.
+    static func leftovers(for definition: CacheDefinition, roots: [DirectoryNode], index: TreeIndex) -> [CacheItem] {
+        guard definition.safety.isCleanable else { return [] }
+        let multipleRoots = roots.count > 1
+        return roots.flatMap { root in
+            index.descendants(of: root, upTo: TreeIndex.defaultDepth)
+                .filter { Cleaner.isStagingName(($0.path as NSString).lastPathComponent) }
+                .map { node in
+                    let relative = String(node.path.dropFirst(root.path.count + 1))
+                    let name = (multipleRoots ? (root.path as NSString).lastPathComponent + "/" : "") + relative
+                    return CacheItem(
+                        id: definition.id + "/" + name, entryID: definition.id, name: name, path: node.path,
+                        bytes: node.total.bytes, hardlinkedBytes: node.total.hardlinkedBytes, lastUsedAt: nil,
+                        isRecommended: true, isPreselectable: true, reason: "left over from an interrupted cleanup"
+                    )
+                }
+        }
+    }
+
+    /// Big application data folders, listed so a full disk is explained; never cleanable.
+    static func largeChildren(_ definition: CacheDefinition, minimumBytes: Int64, roots: [DirectoryNode], index: TreeIndex) -> [CacheItem] {
+        roots.flatMap { root in
+            index.descendants(of: root, depth: 1).filter { $0.total.bytes >= minimumBytes }.map { node in
+                let name = (node.path as NSString).lastPathComponent
+                return CacheItem(
+                    id: definition.id + "/" + name, entryID: definition.id, name: name, path: node.path,
+                    bytes: node.total.bytes, hardlinkedBytes: node.total.hardlinkedBytes,
+                    lastUsedAt: date(node.total.latestModification), isRecommended: false,
+                    reason: "app data: clean it up from inside the app", blockedReason: "holds application data"
+                )
+            }
+        }
+    }
+
+    /// Cargo build dirs: every profile's `incremental` dir is a pure cache (recommended); a whole
+    /// profile also drops `deps` and forces a full rebuild, so it is only ever picked by hand.
+    static func cargoItems(
+        _ definition: CacheDefinition, buildDirDepth: Int, roots: [DirectoryNode], index: TreeIndex,
+        inUse: InUseIndex, guardrail: DeletionGuard
+    ) -> [CacheItem] {
+        let multipleRoots = roots.count > 1
+        var items: [CacheItem] = []
+        for root in roots {
+            let buildDirs = buildDirDepth == 0 ? [root] : index.descendants(of: root, depth: buildDirDepth)
+            for buildDir in buildDirs {
+                // The entry root passed the gate when the catalog was built; per-workspace dirs are checked here.
+                let dirProblem = buildDirDepth == 0 ? nil : CargoBuildDirectory.gateProblem(buildDir.path, guardrail: guardrail)
+                for profile in CargoBuildDirectory.profiles(in: buildDir.path) {
+                    let profilePath = buildDir.path + "/" + profile
+                    guard let profileNode = index.node(at: profilePath) else { continue }
+                    var relative = String(profilePath.dropFirst(root.path.count + 1))
+                    if multipleRoots { relative = (root.path as NSString).lastPathComponent + "/" + relative }
+                    let lock = CargoBuildDirectory.lockFile(forItemAt: profilePath)
+                    let hazard = CargoBuildDirectory.profileHazard(profilePath)
+                    let references = inUse.referenceReasons(under: profilePath)
+                    var notes = ["all of \(profile)'s output: full rebuild"]
+                    if let warning = hazard.warning { notes.append(warning) }
+                    notes += references
+                    items.append(CacheItem(
+                        id: definition.id + "/" + relative, entryID: definition.id, name: relative, path: profilePath,
+                        bytes: profileNode.total.bytes, hardlinkedBytes: profileNode.total.hardlinkedBytes,
+                        lastUsedAt: date(profileNode.total.latestModification), isRecommended: false, reason: notes.joined(separator: "; "),
+                        blockedReason: dirProblem ?? hazard.blocker ?? inUse.runningReason(under: profilePath), lockFile: lock
+                    ))
+                    guard let incremental = index.node(at: profilePath + "/incremental") else { continue }
+                    items.append(CacheItem(
+                        id: definition.id + "/" + relative + "/incremental", entryID: definition.id, name: relative + "/incremental",
+                        path: incremental.path, bytes: incremental.total.bytes, hardlinkedBytes: incremental.total.hardlinkedBytes,
+                        lastUsedAt: date(incremental.total.latestModification), isRecommended: incremental.total.bytes > 0,
+                        isPreselectable: true, reason: "incremental compilation cache: rebuilt on the next build",
+                        blockedReason: dirProblem, lockFile: lock
+                    ))
+                }
+            }
+        }
+        return items
     }
 
     struct ItemCandidate {
@@ -178,6 +291,25 @@ public enum CacheScanner {
         return marks
     }
 
+    /// Older provider versions, recommended only when the scanned projects are known not to use them.
+    static func providerVersions(_ candidates: [ItemCandidate], roots: [DirectoryNode], used: Set<String>?, now: Date) -> [String: Mark] {
+        var marks = olderVersions(candidates, keep: 1, grouping: .parent, now: now)
+        for candidate in candidates {
+            guard let root = roots.first(where: { candidate.node.path.hasPrefix($0.path + "/") }) else { continue }
+            let key = String(candidate.node.path.dropFirst(root.path.count + 1))
+            guard let used else {
+                if let mark = marks[candidate.id], mark.recommended {
+                    marks[candidate.id] = Mark(reason: mark.reason + "; scan projects to see whether it is still used", recommended: false)
+                }
+                continue
+            }
+            if used.contains(key) {
+                marks[candidate.id] = Mark(reason: "used by a scanned project (lock file or .terraform)", recommended: false)
+            }
+        }
+        return marks
+    }
+
     /// `chromium-1228` → `chromium`; nil when the name does not end in `-<digits>`.
     static func revisionedProduct(_ name: String) -> String? {
         guard let dash = name.lastIndex(of: "-") else { return nil }
@@ -218,7 +350,17 @@ struct TreeIndex {
     private let roots: [String: Int]
     private let children: [Int32: [Int]]
 
-    init(tree: ScanTree?, itemRoots: [String], maxDepth: Int = 2) {
+    static let defaultDepth = 2
+
+    /// Path → node for every indexed descendant.
+    private let byPath: [String: Int]
+
+    init(tree: ScanTree?, itemRoots: [String], maxDepth: Int = defaultDepth) {
+        self.init(tree: tree, itemRoots: Dictionary(itemRoots.map { ($0, maxDepth) }, uniquingKeysWith: max))
+    }
+
+    /// `itemRoots`: root path → how many levels below it to index.
+    init(tree: ScanTree?, itemRoots: [String: Int]) {
         nodes = tree?.nodes ?? []
         var roots: [String: Int] = [:]
         for (offset, node) in nodes.enumerated() where node.parent < 0 {
@@ -227,17 +369,25 @@ struct TreeIndex {
         self.roots = roots
 
         // Children always have larger ids than their parent, so one forward pass finds shallow descendants.
-        var depth: [Int32: Int] = [:]
-        for path in itemRoots {
-            if let offset = roots[path] { depth[nodes[offset].id] = 0 }
+        // Depth is counted down: a node indexes children while it has levels left.
+        var remaining: [Int32: Int] = [:]
+        for (path, depth) in itemRoots {
+            if let offset = roots[path] { remaining[nodes[offset].id] = depth }
         }
         var children: [Int32: [Int]] = [:]
+        var byPath: [String: Int] = [:]
         for (offset, node) in nodes.enumerated() where node.parent >= 0 {
-            guard let parentDepth = depth[node.parent], parentDepth < maxDepth else { continue }
-            depth[node.id] = parentDepth + 1
+            guard let left = remaining[node.parent], left > 0 else { continue }
+            remaining[node.id] = left - 1
             children[node.parent, default: []].append(offset)
+            byPath[node.path] = offset
         }
         self.children = children
+        self.byPath = byPath
+    }
+
+    func node(at path: String) -> DirectoryNode? {
+        byPath[path].map { nodes[$0] } ?? root(at: path)
     }
 
     func root(at path: String) -> DirectoryNode? {
@@ -250,5 +400,16 @@ struct TreeIndex {
             level = level.flatMap { children[$0.id, default: []].map { nodes[$0] } }
         }
         return level
+    }
+
+    /// Every indexed descendant from depth 1 to `depth`.
+    func descendants(of node: DirectoryNode, upTo depth: Int) -> [DirectoryNode] {
+        var level = [node]
+        var all: [DirectoryNode] = []
+        for _ in 0..<depth {
+            level = level.flatMap { children[$0.id, default: []].map { nodes[$0] } }
+            all += level
+        }
+        return all
     }
 }

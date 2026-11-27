@@ -74,6 +74,14 @@ enum TerraformRC {
 enum CargoConfig {
     /// `build.target-dir`, whether written as `[build] target-dir`, `build.target-dir` or `build = { target-dir = … }`.
     static func targetDir(in text: String) -> String? {
+        value(of: "build.target-dir", in: text)
+    }
+
+    /// A string value by dotted key (`build.build-dir`), in any of the spellings `targetDir` accepts.
+    static func value(of dottedKey: String, in text: String) -> String? {
+        let parts = dottedKey.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        let (parent, leaf) = (parts[0], parts[1])
         var table = ""
         for rawLine in text.components(separatedBy: "\n") {
             let line = stripComment(rawLine).trimmingCharacters(in: .whitespaces)
@@ -85,19 +93,20 @@ enum CargoConfig {
             let key = normalizeKey(String(line[..<equals]))
             let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
             let fullKey = table.isEmpty ? key : table + "." + key
-            if fullKey == "build.target-dir" { return unquote(value) }
-            if fullKey == "build", value.hasPrefix("{"), let range = value.range(of: #"target-dir\s*=\s*"[^"]*""#, options: .regularExpression) {
+            if fullKey == dottedKey { return unquote(value) }
+            if fullKey == parent, value.hasPrefix("{"),
+               let range = value.range(of: NSRegularExpression.escapedPattern(for: leaf) + #"\s*=\s*"[^"]*""#, options: .regularExpression) {
                 return unquote(String(value[range].split(separator: "=", maxSplits: 1)[1]))
             }
         }
         return nil
     }
 
-    /// Adds `target-dir` under an existing `[build]` table, or appends a new table. nil = already set.
-    static func merged(_ text: String?, targetDir: String) -> String? {
+    /// Adds `key` under an existing `[build]` table, or appends a new table. nil = already set.
+    static func merged(_ text: String?, key: String, value: String, comment: String) -> String? {
         let original = text ?? ""
-        guard self.targetDir(in: original) == nil else { return nil }
-        let entry = "target-dir = \"\(targetDir)\"  # shared by all projects (added by diskcare doctor)"
+        guard self.value(of: "build." + key, in: original) == nil else { return nil }
+        let entry = "\(key) = \"\(value)\"  # \(comment)"
         var lines = original.components(separatedBy: "\n")
         if let header = lines.firstIndex(where: { tableHeader(stripComment($0).trimmingCharacters(in: .whitespaces)) == "build" }) {
             lines.insert(entry, at: header + 1)

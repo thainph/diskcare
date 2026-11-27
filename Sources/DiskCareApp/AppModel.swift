@@ -11,27 +11,41 @@ final class AppModel {
     let settings: AppSettings
     /// Scan history, 7-day growth and the live FSEvents growth watcher.
     let growth = GrowthModel()
+    /// "Where is the space?": large folders outside projects and caches.
+    let explain = ExplainModel()
     /// Global developer caches (~/Library/Caches, ~/.cache, package manager stores…).
     @ObservationIgnored private(set) lazy var caches = CachesModel(
-        moveToTrash: { [settings] in settings.moveToTrash },
-        onCleaned: { [weak self] _ in self?.refreshFreeSpace() }
+        scanRoots: { [settings] in settings.roots.map(ScanOptions.normalize) },
+        terraformDirs: { [weak self] in self?.report.map { $0.artifacts.filter { $0.kind == .terraform }.map(\.path) } },
+        onScanned: { [weak self] report in self?.growth.didScanCaches(report) }
     )
 
     private(set) var report: ScanReport?
     private(set) var dockerReport: DockerReport?
-    private(set) var freeBytes: Int64?
-    private(set) var totalBytes: Int64?
+    private(set) var space: VolumeSpace?
+    /// Trend of the periodic free-space samples (nil until there are enough).
+    private(set) var forecast: SpaceForecast?
     private(set) var lastScanAt: Date?
     private(set) var isScanning = false
     private(set) var isCleaning = false
     private(set) var lastCleanupMessage: String?
-    /// Plan items the user unchecked; kept across rescans by path.
-    var deselected: Set<String> = []
+    /// Project plan items the user ticked; kept across rescans by path. Rebuilding is never
+    /// preselected: the user picks projects by hand.
+    var selectedPlanPaths: Set<String> = []
+    /// The review sheet (one confirmation for everything selected) is open.
+    var isReviewing = false
+    /// Part of the Clean up page shown (All, Projects, Caches, Docker).
+    var cleanupFilter: CleanupFilter = .all
     var selectedSection: MainSection? = .overview
 
     private var scheduler: NSBackgroundActivityScheduler?
+    @ObservationIgnored private var spaceMonitor: Task<Void, Never>?
     @ObservationIgnored var didStart = false
-    private static let lastLowSpaceNotice = "lastLowSpaceNotice"
+    private static let spaceAlertState = "spaceAlertState"
+    /// Free space and known bytes at the last exploration (`ExploreTrigger`).
+    private static let exploreBaseline = "exploreBaseline"
+    /// Free-space check interval: resource values only, no scanning.
+    static let spaceCheckInterval: Duration = .seconds(15 * 60)
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -39,6 +53,13 @@ final class AppModel {
         // Persist the FSEvents position so changes made while the app is closed are replayed next launch.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.growth.stopWatching() }
+        }
+        // A Mac that sleeps a lot misses scheduled scans: catch up after wake.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                LaunchAtLogin.shared.refresh()
+                self?.scanIfDue()
+            }
         }
     }
 
@@ -99,7 +120,7 @@ final class AppModel {
     }
 
     var selectedPlan: [CleanupCandidate] {
-        plan.filter { !deselected.contains($0.path) }
+        plan.filter { selectedPlanPaths.contains($0.path) }
     }
 
     var planBytes: Int64 { plan.reduce(0) { $0 + $1.bytes } }
@@ -120,24 +141,91 @@ final class AppModel {
         if bytes > 0 { return ByteFormat.string(bytes) }
         switch source {
         case .projects where report == nil, .caches where caches.report == nil:
-            return isScanning ? "pending" : "not scanned"
+            return isScanning ? L("pending", "đang chờ") : L("not scanned", "chưa quét")
         case .docker where dockerReport == nil:
-            return isScanning ? "pending" : "not scanned"
+            return isScanning ? L("pending", "đang chờ") : L("not scanned", "chưa quét")
         case .docker where dockerReport?.available == false:
-            return "not running"
+            return L("not running", "chưa chạy")
         default:
             return empty
         }
     }
 
-    func selectAllPlan() { deselected.removeAll() }
+    func selectAllPlan() { selectedPlanPaths = Set(plan.map(\.path)) }
 
-    func selectNoPlan() { deselected = Set(plan.map(\.path)) }
+    func selectNoPlan() { selectedPlanPaths.removeAll() }
+
+    /// What "Clean safely" cleans: caches re-created automatically.
+    var safeCleanBytes: Int64 { caches.report?.safeReclaimableBytes ?? 0 }
+
+    /// One-click path from the Overview and the menu: pick only safe caches, then review.
+    func reviewSafeClean() {
+        selectNoPlan()
+        caches.selectAllSafe()
+        selectedSection = .cleanup
+        isReviewing = true
+    }
+
+    /// Selected projects and caches: one review, one confirmation, one run.
+    var selectionBytes: Int64 {
+        selectedPlan.reduce(0) { $0 + $1.bytes } + caches.selectedBytes
+    }
+
+    var selectionCount: Int { selectedPlan.count + caches.selectedTargets.count }
 
     func dismissCleanupMessage() { lastCleanupMessage = nil }
 
-    var isLowOnSpace: Bool {
-        freeBytes.map { $0 < settings.lowSpaceThresholdBytes } ?? false
+    /// `df` free space; alerts use this.
+    var freeBytes: Int64? { space?.availableBytes }
+    var totalBytes: Int64? { space?.totalBytes }
+    /// Purgeable space on top of `freeBytes`; nil when there is none worth showing.
+    var purgeableBytes: Int64? { space.map(\.purgeableBytes).flatMap { $0 >= 1_000_000_000 ? $0 : nil } }
+
+    var spaceLevel: SpaceLevel {
+        guard let space else { return .ok }
+        return settings.spaceThresholds.level(available: space.availableBytes, total: space.totalBytes)
+    }
+
+    var isLowOnSpace: Bool { spaceLevel != .ok }
+
+    /// The effective low-space threshold for this disk (max of the GB and percentage settings).
+    var lowSpaceThresholdBytes: Int64? {
+        space.map { settings.spaceThresholds.lowBytes(total: $0.totalBytes) }
+    }
+
+    /// Banner text when free space is below a threshold.
+    var lowSpaceMessage: String? {
+        guard let space, let threshold = lowSpaceThresholdBytes else { return nil }
+        switch spaceLevel {
+        case .ok: return nil
+        case .low: return L("Free space is below your \(ByteFormat.string(threshold)) warning level.",
+                            "Dung lượng trống đã dưới ngưỡng cảnh báo \(ByteFormat.string(threshold)).")
+        case .critical:
+            let critical = settings.spaceThresholds.criticalBytes(total: space.totalBytes)
+            return L("Free space is critically low (below \(ByteFormat.string(critical))).",
+                     "Dung lượng trống rất thấp (dưới \(ByteFormat.string(critical))).")
+        }
+    }
+
+    /// "Full in ~9 days" when the trend predicts a full disk within two weeks.
+    var forecastText: String? {
+        guard let days = forecast?.daysUntilFull, days < 14 else { return nil }
+        return days < 1
+            ? L("At the current rate the disk fills up within a day", "Với tốc độ hiện tại, ổ sẽ đầy trong vòng một ngày")
+            : L("At the current rate the disk is full in ~\(Int(days.rounded())) days", "Với tốc độ hiện tại, ổ sẽ đầy sau ~\(Int(days.rounded())) ngày")
+    }
+
+    var scanStaleness: ScanStaleness {
+        ScanFreshness.staleness(lastScan: lastScanAt)
+    }
+
+    /// "Last full scan: 3 days ago".
+    var lastScanText: String {
+        guard let lastScanAt else { return L("No full scan yet", "Chưa quét lần nào") }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = AppLanguage.resolved.locale
+        let age = formatter.localizedString(for: lastScanAt, relativeTo: Date())
+        return L("Last full scan \(age)", "Quét gần nhất \(age)")
     }
 
     var menuTitle: String {
@@ -187,7 +275,7 @@ final class AppModel {
 
         var fresh: [ScanReport] = []
         for (index, root) in roots.enumerated() {
-            scanStatus = ScanStatus(step: index + 1, totalSteps: totalSteps, title: "Scanning \(root.abbreviatingHome)")
+            scanStatus = ScanStatus(step: index + 1, totalSteps: totalSteps, title: L("Scanning \(root.abbreviatingHome)", "Đang quét \(root.abbreviatingHome)"))
             progress.reset()
             let rootReport = await DiskAnalyzer.analyze(ScanOptions(roots: [root], priority: priority, progress: progress))
             fresh.append(rootReport)
@@ -195,17 +283,18 @@ final class AppModel {
         }
         if let combined = ScanReport.combining(fresh) { report = combined }
 
-        scanStatus = ScanStatus(step: roots.count + 1, totalSteps: totalSteps, title: "Checking Docker")
+        scanStatus = ScanStatus(step: roots.count + 1, totalSteps: totalSteps, title: L("Checking Docker", "Đang kiểm tra Docker"))
         let dockerReport = await DockerScanner.scan()
         self.dockerReport = dockerReport
         lastScanAt = Date()
         refreshFreeSpace()
         if let report {
-            growth.didScan(report, freeBytes: freeBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
+            // `scans.free_bytes` keeps its original meaning: free space for important usage.
+            growth.didScan(report, freeBytes: space?.importantAvailableBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
         }
-        notifyIfLowOnSpace()
+        evaluateSpaceAlerts()
 
-        scanStatus = ScanStatus(step: roots.count + 2, totalSteps: totalSteps, title: "Measuring developer caches")
+        scanStatus = ScanStatus(step: roots.count + 2, totalSteps: totalSteps, title: L("Measuring developer caches", "Đang đo cache"))
         progress.reset()
         await caches.refresh(priority: priority, progress: progress)
         saveSnapshot()
@@ -225,9 +314,87 @@ final class AppModel {
     }
 
     func refreshFreeSpace() {
-        freeBytes = Cleaner.availableCapacity(at: NSHomeDirectory())
-        totalBytes = (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey]))?
-            .volumeTotalCapacity.map(Int64.init)
+        space = VolumeSpace.measure(at: NSHomeDirectory())
+    }
+
+    /// Checks free space every 15 minutes, independently of scans: records a sample, updates the
+    /// forecast and sends low-space alerts.
+    func startSpaceMonitor() {
+        spaceMonitor?.cancel()
+        spaceMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkSpace()
+                try? await Task.sleep(for: Self.spaceCheckInterval)
+            }
+        }
+    }
+
+    func checkSpace() async {
+        refreshFreeSpace()
+        guard let space else { return }
+        forecast = await growth.record(FreeSample(date: Date(), space: space))
+        evaluateSpaceAlerts()
+        await exploreIfUnexplained(space)
+    }
+
+    // MARK: Explain
+
+    /// Bytes the scans account for: projects, caches (incl. app data) and Docker.
+    var knownBytes: Int64 {
+        (report?.stats.bytes ?? 0) + (caches.report?.totalBytes ?? 0) + (dockerReport.map { $0.available ? $0.totalBytes : 0 } ?? 0)
+    }
+
+    /// Reads the home folder outside roots and caches, then remembers free space for the trigger.
+    @discardableResult
+    func explainDiskUsage(priority: ScanPriority) async -> DiskExplanation? {
+        var known = [KnownSource(name: "projects", bytes: report?.stats.bytes ?? 0),
+                     KnownSource(name: "caches & app data", bytes: caches.report?.totalBytes ?? 0)]
+        if let dockerReport, dockerReport.available { known.append(KnownSource(name: "Docker", bytes: dockerReport.totalBytes)) }
+        let options = DiskExplorer.Options(
+            scanRoots: report?.roots ?? settings.roots.map(ScanOptions.normalize),
+            cachePaths: caches.report?.entries.flatMap(\.paths) ?? [], known: known, priority: priority
+        )
+        let result = await explain.run(options)
+        if let available = result?.volume?.availableBytes {
+            saveExploreBaseline(ExploreTrigger(availableBytes: available, knownBytes: knownBytes))
+        }
+        return result
+    }
+
+    /// Free space fell by `max(10 GB, 2%)` since the last exploration and the scans explain less
+    /// than half of it: look for it in the background and say where it went.
+    private func exploreIfUnexplained(_ space: VolumeSpace) async {
+        guard report != nil, !isScanning, !explain.isRunning else { return }
+        guard let baseline = loadExploreBaseline() else {
+            saveExploreBaseline(ExploreTrigger(availableBytes: space.availableBytes, knownBytes: knownBytes))
+            return
+        }
+        guard baseline.shouldExplore(availableBytes: space.availableBytes, knownBytes: knownBytes, totalBytes: space.totalBytes),
+              let result = await explainDiskUsage(priority: .background), !result.cancelled else { return }
+        let content = UNMutableNotificationContent()
+        let lost = ByteFormat.string(baseline.availableBytes - space.availableBytes)
+        content.title = L("\(lost) of free space went somewhere new", "\(lost) dung lượng trống đã đi đâu đó mới")
+        let top = result.unexplained.prefix(3).map { "\($0.path.abbreviatingHome) \(ByteFormat.string($0.bytes))" }
+        content.body = top.isEmpty
+            ? L("Your projects and caches do not explain it. Open DiskCare › Insights › Where is the rest?",
+                "Dự án và cache không giải thích được. Mở DiskCare › Phân tích › Phần còn lại ở đâu?")
+            : L("Largest folders outside your projects and caches: ", "Thư mục lớn nhất ngoài dự án và cache: ") + top.joined(separator: ", ") + "."
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "explain", content: content, trigger: nil))
+    }
+
+    private func loadExploreBaseline() -> ExploreTrigger? {
+        UserDefaults.standard.data(forKey: Self.exploreBaseline).flatMap { try? JSONDecoder().decode(ExploreTrigger.self, from: $0) }
+    }
+
+    private func saveExploreBaseline(_ trigger: ExploreTrigger) {
+        if let data = try? JSONEncoder().encode(trigger) { UserDefaults.standard.set(data, forKey: Self.exploreBaseline) }
+    }
+
+    /// Scans in the background right away when the last full scan is older than twice the schedule
+    /// interval (launch, wake from sleep).
+    func scanIfDue() {
+        guard ScanFreshness.isScanDue(lastScan: lastScanAt, intervalHours: settings.scanIntervalHours) else { return }
+        scan(priority: .background)
     }
 
     /// Rescans periodically when the system decides it is a good time (idle, on power…).
@@ -249,31 +416,33 @@ final class AppModel {
 
     // MARK: Cleaning
 
-    func cleanSelected() {
-        let items = selectedPlan
-        guard !items.isEmpty, !isCleaning else { return }
+    /// Cleans the reviewed projects and caches, then rescans. Projects and caches run one after the
+    /// other so the free-space delta and the message cover both.
+    func cleanReviewed(projects: [CleanupCandidate], caches targets: [CacheCleanTarget]) {
+        guard !isCleaning, !(projects.isEmpty && targets.isEmpty) else { return }
         isCleaning = true
         lastCleanupMessage = nil
         let roots = report?.roots ?? settings.roots.map(ScanOptions.normalize)
         let mode: CleanupMode = settings.moveToTrash ? .trash : .delete
         let before = freeBytes
         Task {
-            let outcomes = await Task.detached(priority: .userInitiated) {
-                Cleaner.execute(items, roots: roots, mode: mode)
+            let (outcomes, cacheResult) = await Task.detached(priority: .userInitiated) {
+                (Cleaner.execute(projects, roots: roots, mode: mode), CacheCleaner.clean(targets, mode: mode))
             }.value
             refreshFreeSpace()
-            let failed = outcomes.filter { !$0.succeeded }
-            var message = "Cleaned \(outcomes.count - failed.count)/\(outcomes.count) items"
+            let failures = outcomes.filter { !$0.succeeded }.map { (URL(fileURLWithPath: $0.candidate.path).lastPathComponent, $0.error ?? "error") }
+                + cacheResult.outcomes.filter { !$0.succeeded }.map { ($0.target.title, $0.error ?? "error") }
+            let total = outcomes.count + cacheResult.outcomes.count
+            var message = L("Cleaned \(total - failures.count) of \(total)", "Đã dọn \(total - failures.count)/\(total) mục")
             if let before, let after = freeBytes, after > before {
-                message += ", +\(ByteFormat.string(after - before)) free"
+                message += L(", +\(ByteFormat.string(after - before)) free", ", trống thêm \(ByteFormat.string(after - before))")
             }
-            if mode == .trash { message += " (empty Trash to reclaim)" }
-            if let first = failed.first {
-                message += ". Failed: \(URL(fileURLWithPath: first.candidate.path).lastPathComponent) – \(first.error ?? "error")"
-            }
+            if mode == .trash { message += L(" (empty the Trash to reclaim)", " (dọn Thùng rác để lấy lại chỗ)") }
+            if let first = failures.first { message += L(". Failed: \(first.0) – \(first.1)", ". Lỗi: \(first.0) – \(first.1)") }
             lastCleanupMessage = message
             isCleaning = false
-            deselected.removeAll()
+            selectedPlanPaths.removeAll()
+            caches.selection.removeAll()
             scan(priority: .background)
         }
     }
@@ -284,22 +453,60 @@ final class AppModel {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    /// At most one low-space notice per day.
-    private func notifyIfLowOnSpace() {
-        guard isLowOnSpace, let freeBytes else { return }
+    /// Sends at most one space alert, rate limited by `SpaceAlertPolicy` (state kept in UserDefaults).
+    private func evaluateSpaceAlerts(now: Date = Date()) {
+        guard let space else { return }
         let defaults = UserDefaults.standard
-        let last = defaults.object(forKey: Self.lastLowSpaceNotice) as? Date ?? .distantPast
-        guard Date().timeIntervalSince(last) > 86_400 else { return }
-        defaults.set(Date(), forKey: Self.lastLowSpaceNotice)
+        var state = defaults.data(forKey: Self.spaceAlertState)
+            .flatMap { try? JSONDecoder().decode(SpaceAlertState.self, from: $0) } ?? SpaceAlertState()
+        let policy = SpaceAlertPolicy(thresholds: settings.spaceThresholds)
+        let alert = policy.evaluate(space, forecast: forecast, state: &state, now: now)
+        if let data = try? JSONEncoder().encode(state) { defaults.set(data, forKey: Self.spaceAlertState) }
+        guard let alert else { return }
+        Task { postSpaceAlert(alert, space: space, sources: await growth.fastestGrowing(limit: 3)) }
+    }
 
-        let reclaimable = selectedPlan.reduce(Int64(0)) { $0 + $1.bytes }
-            + (dockerReport?.reclaimableBytes ?? 0)
+    private func postSpaceAlert(_ alert: SpaceAlert, space: VolumeSpace, sources: [GrowthSource]) {
+        let free = ByteFormat.string(space.availableBytes)
         let content = UNMutableNotificationContent()
-        content.title = "Disk almost full: \(ByteFormat.string(freeBytes)) free"
-        content.body = reclaimable > 0
-            ? "DiskCare found \(ByteFormat.string(reclaimable)) you can reclaim. Open DiskCare from the menu bar."
-            : "Open DiskCare from the menu bar to see what is using space."
-        let request = UNNotificationRequest(identifier: "low-space", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        var lines: [String] = []
+        switch alert {
+        case .critical:
+            content.title = L("Disk critically low: \(free) free", "Ổ gần hết chỗ: còn trống \(free)")
+        case .warning:
+            content.title = L("Disk almost full: \(free) free", "Ổ sắp đầy: còn trống \(free)")
+        case .forecast:
+            content.title = forecastText ?? L("Disk is filling up", "Ổ đang đầy dần")
+            if let perDay = forecast?.bytesPerDay {
+                let rate = ByteFormat.string(Int64(-perDay))
+                lines.append(L("Free space is falling by about \(rate) a day (\(free) free now).",
+                               "Dung lượng trống giảm khoảng \(rate) mỗi ngày (hiện còn \(free))."))
+            }
+        }
+        if alert != .forecast, let forecastText { lines.append(forecastText + ".") }
+        if !sources.isEmpty {
+            lines.append(L("Growing fastest: ", "Tăng nhanh nhất: ") + sources.map { "\(label(for: $0)) +\(ByteFormat.string($0.delta))" }.joined(separator: ", ") + ".")
+        }
+        let reclaimable = reclaimableTotal
+        lines.append(reclaimable > 0
+            ? L("DiskCare found \(ByteFormat.string(reclaimable)) you can reclaim. Open DiskCare from the menu bar.",
+                "DiskCare tìm thấy \(ByteFormat.string(reclaimable)) có thể giải phóng. Mở DiskCare từ thanh menu.")
+            : L("Open DiskCare from the menu bar to see what is using space.",
+                "Mở DiskCare từ thanh menu để xem cái gì đang chiếm chỗ."))
+        content.body = lines.joined(separator: " ")
+        if alert == .critical { content.sound = .default }
+        let identifier = alert == .forecast ? "space-forecast" : "low-space"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+
+    /// Short name for a growth source: cache title, or the artifact's parent folder and name.
+    private func label(for source: GrowthSource) -> String {
+        switch source.origin {
+        case .cache:
+            return caches.report?.entry(id: source.name)?.title ?? source.name
+        case .artifact:
+            let url = URL(fileURLWithPath: source.name)
+            return "\(url.deletingLastPathComponent().lastPathComponent)/\(url.lastPathComponent)"
+        }
     }
 }

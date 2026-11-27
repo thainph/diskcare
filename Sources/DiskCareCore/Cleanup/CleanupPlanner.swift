@@ -71,10 +71,20 @@ public enum CleanupPlanner {
         for artifact in report.artifacts {
             guard artifact.kind.isRegenerable,
                   criteria.kinds?.contains(artifact.kind) ?? true,
-                  artifact.totals.bytes >= criteria.minimumBytes,
+                  artifact.totals.bytes >= criteria.minimumBytes || artifact.kind == .cleanupLeftover,
                   !removedWorktrees.contains(where: { artifact.path.hasPrefix($0) }) else { continue }
 
             let workspace = artifact.workspacePath.flatMap { workspaces[$0] }
+            // Already chosen for deletion once: finish it regardless of activity.
+            if artifact.kind == .cleanupLeftover {
+                candidates.append(CleanupCandidate(
+                    action: .deleteArtifact, path: artifact.path, kind: artifact.kind,
+                    bytes: artifact.totals.bytes, hardlinkedBytes: artifact.totals.hardlinkedBytes,
+                    idleDays: nil, workspacePath: artifact.workspacePath,
+                    mainRepositoryPath: workspace?.mainRepositoryPath, reason: "left over from an interrupted cleanup"
+                ))
+                continue
+            }
             let lastActivity = workspace?.lastActivityAt ?? artifact.projectLastChangeAt
             let idle = lastActivity.map { max(0, Int(now.timeIntervalSince($0) / 86_400)) }
             guard let idle, idle >= criteria.minimumIdleDays else { continue }

@@ -13,7 +13,8 @@ enum SnapshotDebug {
     @MainActor
     static func run(model: AppModel, openMain: () -> Void) async {
         guard let directory else { return }
-        // Popover while a scan is running (status UI).
+        // Popover while a scan is running (status UI). Launch only scans when results are stale.
+        if !model.isScanning { model.scan(priority: .background) }
         while model.scanStatus == nil { try? await Task.sleep(for: .milliseconds(200)) }
         try? await Task.sleep(for: .seconds(2))
         let scanning = NSHostingView(rootView: MenuContent(model: model))

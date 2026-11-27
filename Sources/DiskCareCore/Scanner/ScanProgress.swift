@@ -6,6 +6,7 @@ public final class ScanProgress: Sendable {
     private let directoryCount = Atomic<Int>(0)
     private let gitDone = Atomic<Int>(0)
     private let gitTotal = Atomic<Int>(0)
+    private let cancelled = Atomic<Bool>(false)
 
     public init() {}
 
@@ -15,6 +16,13 @@ public final class ScanProgress: Sendable {
     public var gitInspected: (done: Int, total: Int) {
         (gitDone.load(ordering: .relaxed), gitTotal.load(ordering: .relaxed))
     }
+
+    /// Stops the scan from descending further; what was read so far is still returned.
+    public func cancel() {
+        cancelled.store(true, ordering: .relaxed)
+    }
+
+    public var isCancelled: Bool { cancelled.load(ordering: .relaxed) }
 
     func addDirectory(files: Int) {
         directoryCount.add(1, ordering: .relaxed)
