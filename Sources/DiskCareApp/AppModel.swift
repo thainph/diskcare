@@ -16,13 +16,15 @@ final class AppModel {
         moveToTrash: { [settings] in settings.moveToTrash },
         scanRoots: { [settings] in settings.roots.map(ScanOptions.normalize) },
         terraformDirs: { [weak self] in self?.report.map { $0.artifacts.filter { $0.kind == .terraform }.map(\.path) } },
-        onCleaned: { [weak self] _ in self?.refreshFreeSpace() }
+        onCleaned: { [weak self] _ in self?.refreshFreeSpace() },
+        onScanned: { [weak self] report in self?.growth.didScanCaches(report) }
     )
 
     private(set) var report: ScanReport?
     private(set) var dockerReport: DockerReport?
-    private(set) var freeBytes: Int64?
-    private(set) var totalBytes: Int64?
+    private(set) var space: VolumeSpace?
+    /// Trend of the periodic free-space samples (nil until there are enough).
+    private(set) var forecast: SpaceForecast?
     private(set) var lastScanAt: Date?
     private(set) var isScanning = false
     private(set) var isCleaning = false
@@ -32,8 +34,11 @@ final class AppModel {
     var selectedSection: MainSection? = .overview
 
     private var scheduler: NSBackgroundActivityScheduler?
+    @ObservationIgnored private var spaceMonitor: Task<Void, Never>?
     @ObservationIgnored var didStart = false
-    private static let lastLowSpaceNotice = "lastLowSpaceNotice"
+    private static let spaceAlertState = "spaceAlertState"
+    /// Free-space check interval: resource values only, no scanning.
+    static let spaceCheckInterval: Duration = .seconds(15 * 60)
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -41,6 +46,13 @@ final class AppModel {
         // Persist the FSEvents position so changes made while the app is closed are replayed next launch.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.growth.stopWatching() }
+        }
+        // A Mac that sleeps a lot misses scheduled scans: catch up after wake.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                LaunchAtLogin.shared.refresh()
+                self?.scanIfDue()
+            }
         }
     }
 
@@ -138,8 +150,50 @@ final class AppModel {
 
     func dismissCleanupMessage() { lastCleanupMessage = nil }
 
-    var isLowOnSpace: Bool {
-        freeBytes.map { $0 < settings.lowSpaceThresholdBytes } ?? false
+    /// `df` free space; alerts use this.
+    var freeBytes: Int64? { space?.availableBytes }
+    var totalBytes: Int64? { space?.totalBytes }
+    /// Purgeable space on top of `freeBytes`; nil when there is none worth showing.
+    var purgeableBytes: Int64? { space.map(\.purgeableBytes).flatMap { $0 >= 1_000_000_000 ? $0 : nil } }
+
+    var spaceLevel: SpaceLevel {
+        guard let space else { return .ok }
+        return settings.spaceThresholds.level(available: space.availableBytes, total: space.totalBytes)
+    }
+
+    var isLowOnSpace: Bool { spaceLevel != .ok }
+
+    /// The effective low-space threshold for this disk (max of the GB and percentage settings).
+    var lowSpaceThresholdBytes: Int64? {
+        space.map { settings.spaceThresholds.lowBytes(total: $0.totalBytes) }
+    }
+
+    /// Banner text when free space is below a threshold.
+    var lowSpaceMessage: String? {
+        guard let space, let threshold = lowSpaceThresholdBytes else { return nil }
+        switch spaceLevel {
+        case .ok: return nil
+        case .low: return "Free space is below your \(ByteFormat.string(threshold)) warning level."
+        case .critical:
+            let critical = settings.spaceThresholds.criticalBytes(total: space.totalBytes)
+            return "Free space is critically low (below \(ByteFormat.string(critical)))."
+        }
+    }
+
+    /// "Full in ~9 days" when the trend predicts a full disk within two weeks.
+    var forecastText: String? {
+        guard let days = forecast?.daysUntilFull, days < 14 else { return nil }
+        return days < 1 ? "At the current rate the disk fills up within a day" : "At the current rate the disk is full in ~\(Int(days.rounded())) days"
+    }
+
+    var scanStaleness: ScanStaleness {
+        ScanFreshness.staleness(lastScan: lastScanAt)
+    }
+
+    /// "Last full scan: 3 days ago".
+    var lastScanText: String {
+        guard let lastScanAt else { return "No full scan yet" }
+        return "Last full scan: \(ScanFreshness.ageText(lastScan: lastScanAt))"
     }
 
     var menuTitle: String {
@@ -203,9 +257,10 @@ final class AppModel {
         lastScanAt = Date()
         refreshFreeSpace()
         if let report {
-            growth.didScan(report, freeBytes: freeBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
+            // `scans.free_bytes` keeps its original meaning: free space for important usage.
+            growth.didScan(report, freeBytes: space?.importantAvailableBytes, dockerBytes: dockerReport.available ? dockerReport.totalBytes : nil)
         }
-        notifyIfLowOnSpace()
+        evaluateSpaceAlerts()
 
         scanStatus = ScanStatus(step: roots.count + 2, totalSteps: totalSteps, title: "Measuring developer caches")
         progress.reset()
@@ -227,9 +282,33 @@ final class AppModel {
     }
 
     func refreshFreeSpace() {
-        freeBytes = Cleaner.availableCapacity(at: NSHomeDirectory())
-        totalBytes = (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey]))?
-            .volumeTotalCapacity.map(Int64.init)
+        space = VolumeSpace.measure(at: NSHomeDirectory())
+    }
+
+    /// Checks free space every 15 minutes, independently of scans: records a sample, updates the
+    /// forecast and sends low-space alerts.
+    func startSpaceMonitor() {
+        spaceMonitor?.cancel()
+        spaceMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkSpace()
+                try? await Task.sleep(for: Self.spaceCheckInterval)
+            }
+        }
+    }
+
+    func checkSpace() async {
+        refreshFreeSpace()
+        guard let space else { return }
+        forecast = await growth.record(FreeSample(date: Date(), space: space))
+        evaluateSpaceAlerts()
+    }
+
+    /// Scans in the background right away when the last full scan is older than twice the schedule
+    /// interval (launch, wake from sleep).
+    func scanIfDue() {
+        guard ScanFreshness.isScanDue(lastScan: lastScanAt, intervalHours: settings.scanIntervalHours) else { return }
+        scan(priority: .background)
     }
 
     /// Rescans periodically when the system decides it is a good time (idle, on power…).
@@ -286,22 +365,57 @@ final class AppModel {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    /// At most one low-space notice per day.
-    private func notifyIfLowOnSpace() {
-        guard isLowOnSpace, let freeBytes else { return }
+    /// Sends at most one space alert, rate limited by `SpaceAlertPolicy` (state kept in UserDefaults).
+    private func evaluateSpaceAlerts(now: Date = Date()) {
+        guard let space else { return }
         let defaults = UserDefaults.standard
-        let last = defaults.object(forKey: Self.lastLowSpaceNotice) as? Date ?? .distantPast
-        guard Date().timeIntervalSince(last) > 86_400 else { return }
-        defaults.set(Date(), forKey: Self.lastLowSpaceNotice)
+        var state = defaults.data(forKey: Self.spaceAlertState)
+            .flatMap { try? JSONDecoder().decode(SpaceAlertState.self, from: $0) } ?? SpaceAlertState()
+        let policy = SpaceAlertPolicy(thresholds: settings.spaceThresholds)
+        let alert = policy.evaluate(space, forecast: forecast, state: &state, now: now)
+        if let data = try? JSONEncoder().encode(state) { defaults.set(data, forKey: Self.spaceAlertState) }
+        guard let alert else { return }
+        Task { postSpaceAlert(alert, space: space, sources: await growth.fastestGrowing(limit: 3)) }
+    }
 
+    private func postSpaceAlert(_ alert: SpaceAlert, space: VolumeSpace, sources: [GrowthSource]) {
+        let free = ByteFormat.string(space.availableBytes)
+        let content = UNMutableNotificationContent()
+        var lines: [String] = []
+        switch alert {
+        case .critical:
+            content.title = "Disk critically low: \(free) free"
+        case .warning:
+            content.title = "Disk almost full: \(free) free"
+        case .forecast:
+            content.title = forecastText ?? "Disk is filling up"
+            if let perDay = forecast?.bytesPerDay {
+                lines.append("Free space is falling by about \(ByteFormat.string(Int64(-perDay))) a day (\(free) free now).")
+            }
+        }
+        if alert != .forecast, let forecastText { lines.append(forecastText + ".") }
+        if !sources.isEmpty {
+            lines.append("Growing fastest: " + sources.map { "\(label(for: $0)) +\(ByteFormat.string($0.delta))" }.joined(separator: ", ") + ".")
+        }
         let reclaimable = selectedPlan.reduce(Int64(0)) { $0 + $1.bytes }
             + (dockerReport?.reclaimableBytes ?? 0)
-        let content = UNMutableNotificationContent()
-        content.title = "Disk almost full: \(ByteFormat.string(freeBytes)) free"
-        content.body = reclaimable > 0
+        lines.append(reclaimable > 0
             ? "DiskCare found \(ByteFormat.string(reclaimable)) you can reclaim. Open DiskCare from the menu bar."
-            : "Open DiskCare from the menu bar to see what is using space."
-        let request = UNNotificationRequest(identifier: "low-space", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+            : "Open DiskCare from the menu bar to see what is using space.")
+        content.body = lines.joined(separator: " ")
+        if alert == .critical { content.sound = .default }
+        let identifier = alert == .forecast ? "space-forecast" : "low-space"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+
+    /// Short name for a growth source: cache title, or the artifact's parent folder and name.
+    private func label(for source: GrowthSource) -> String {
+        switch source.origin {
+        case .cache:
+            return caches.report?.entry(id: source.name)?.title ?? source.name
+        case .artifact:
+            let url = URL(fileURLWithPath: source.name)
+            return "\(url.deletingLastPathComponent().lastPathComponent)/\(url.lastPathComponent)"
+        }
     }
 }

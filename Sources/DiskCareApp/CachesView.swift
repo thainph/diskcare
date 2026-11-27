@@ -21,17 +21,21 @@ final class CachesModel {
     /// `.terraform` dirs of the last project scan (nil before one): which provider versions are used.
     private let terraformDirs: @MainActor () -> [String]?
     private let onCleaned: (@MainActor (CacheCleanResult) -> Void)?
+    /// Called after every fresh measurement (not for restored reports).
+    private let onScanned: (@MainActor (CacheReport) -> Void)?
 
     init(
         moveToTrash: @escaping @MainActor () -> Bool = { false },
         scanRoots: @escaping @MainActor () -> [String] = { [] },
         terraformDirs: @escaping @MainActor () -> [String]? = { nil },
-        onCleaned: (@MainActor (CacheCleanResult) -> Void)? = nil
+        onCleaned: (@MainActor (CacheCleanResult) -> Void)? = nil,
+        onScanned: (@MainActor (CacheReport) -> Void)? = nil
     ) {
         self.moveToTrash = moveToTrash
         self.scanRoots = scanRoots
         self.terraformDirs = terraformDirs
         self.onCleaned = onCleaned
+        self.onScanned = onScanned
     }
 
     var selectedTargets: [CacheCleanTarget] {
@@ -78,6 +82,7 @@ final class CachesModel {
         let report = await CacheScanner.scan(options)
         apply(report)
         isScanning = false
+        onScanned?(report)
     }
 
     /// Shows a previously saved report (app launch) until the next scan finishes.

@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
@@ -7,7 +6,7 @@ struct SettingsView: View {
 
     @Bindable var settings: AppSettings
     let onChange: () -> Void
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    private let launchAtLogin = LaunchAtLogin.shared
     @State private var loginError: String?
 
     var body: some View {
@@ -37,16 +36,26 @@ struct SettingsView: View {
 
             Section("Background") {
                 Stepper("Scan every \(settings.scanIntervalHours) hours", value: $settings.scanIntervalHours, in: 1...48)
-                Stepper("Warn when free space < \(settings.lowSpaceThresholdGB) GB", value: $settings.lowSpaceThresholdGB, in: 5...500, step: 5)
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, enabled in setLaunchAtLogin(enabled) }
+                Toggle("Launch at login", isOn: Binding(get: { launchAtLogin.isEnabled }, set: setLaunchAtLogin))
                 if let loginError {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
             }
+
+            Section {
+                Stepper("At least \(settings.lowSpaceThresholdGB) GB", value: $settings.lowSpaceThresholdGB, in: 5...500, step: 5)
+                Stepper("Or \(settings.lowSpacePercent)% of the disk, if larger", value: $settings.lowSpacePercent, in: 1...50)
+                Stepper("Critical below \(settings.criticalSpacePercent)% of the disk", value: $settings.criticalSpacePercent, in: 1...max(1, settings.lowSpacePercent))
+            } header: {
+                Text("Warn when free space is low")
+            } footer: {
+                Text("Free space is checked every 15 minutes. Warnings repeat at most daily, critical alerts every 6 hours.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 460)
+        .onAppear { launchAtLogin.refresh() }
         .onChange(of: settings.scanIntervalHours) { onChange() }
     }
 
@@ -64,15 +73,10 @@ struct SettingsView: View {
 
     private func setLaunchAtLogin(_ enabled: Bool) {
         do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
+            try launchAtLogin.set(enabled)
             loginError = nil
         } catch {
             loginError = "\(error.localizedDescription)"
-            launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
 }

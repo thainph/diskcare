@@ -53,6 +53,41 @@ final class GrowthModel {
         startWatching(report, excludedPaths: excludedPaths)
     }
 
+    /// Records cache entry sizes after a cache scan (history for growth alerts).
+    func didScanCaches(_ report: CacheReport) {
+        guard let store else { return }
+        Task {
+            do {
+                try await Task.detached(priority: .utility) { _ = try store.record(caches: report) }.value
+            } catch {
+                errorMessage = "Could not record cache sizes: \(error)"
+            }
+        }
+    }
+
+    /// Records a periodic free-space sample and returns the updated trend.
+    func record(_ sample: FreeSample) async -> SpaceForecast? {
+        guard let store else { return nil }
+        do {
+            return try await Task.detached(priority: .utility) {
+                try store.record(sample: sample)
+                return SpaceForecast.make(samples: try store.freeSamples(since: sample.date.addingTimeInterval(-14 * 86_400)), now: sample.date)
+            }.value
+        } catch {
+            errorMessage = "Could not record free space: \(error)"
+            return nil
+        }
+    }
+
+    /// Artifacts and caches that grew the most over the period, for notifications.
+    func fastestGrowing(limit: Int = 3) async -> [GrowthSource] {
+        guard let store else { return [] }
+        let days = days
+        return (try? await Task.detached(priority: .utility) {
+            try GrowthAnalyzer.fastestGrowing(store, days: days, limit: limit)
+        }.value) ?? []
+    }
+
     func reload() {
         guard let store else { return }
         let days = days

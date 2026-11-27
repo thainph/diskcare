@@ -47,7 +47,7 @@ public struct CacheCleanResult: Sendable, Codable {
     public let freeBytesBefore: Int64?
     public let freeBytesAfter: Int64?
 
-    /// Measured change in free space (only meaningful in delete mode).
+    /// Measured change in `df` free space (only meaningful in delete mode).
     public var freedBytes: Int64? {
         guard let freeBytesBefore, let freeBytesAfter else { return nil }
         return freeBytesAfter - freeBytesBefore

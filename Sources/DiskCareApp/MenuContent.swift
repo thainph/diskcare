@@ -11,12 +11,15 @@ struct MenuContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             diskHeader
-            if model.isLowOnSpace {
-                StatusBanner(message: "Free space is below \(model.settings.lowSpaceThresholdGB) GB.", isError: true)
+            if let message = model.lowSpaceMessage {
+                StatusBanner(message: message, isError: true)
+            } else if let forecast = model.forecastText {
+                StatusBanner(message: forecast + ".", isError: true)
             }
             Divider()
             reclaimableSection
             growthAlert
+            LaunchAtLoginBanner()
             Button {
                 openMain(.overview)
             } label: {
@@ -38,6 +41,10 @@ struct MenuContent: View {
                     .font(.system(size: 28, weight: .semibold, design: .rounded))
                     .foregroundStyle(model.isLowOnSpace ? .red : .primary)
                 Text("free").foregroundStyle(.secondary)
+                if let purgeable = model.purgeableBytes {
+                    Text("+\(ByteFormat.string(purgeable)) purgeable").font(.caption).foregroundStyle(.secondary)
+                        .help("Space macOS can free on demand (snapshots, iCloud copies). Not counted as free by df.")
+                }
                 Spacer()
                 if let total = model.totalBytes {
                     Text("of \(ByteFormat.string(total))").font(.callout).foregroundStyle(.secondary)
@@ -100,9 +107,7 @@ struct MenuContent: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            if let date = model.lastScanAt {
-                Text("Updated \(date, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
-            }
+            LastScanLabel(model: model)
             Spacer()
             Button {
                 model.scan()

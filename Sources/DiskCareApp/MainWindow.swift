@@ -128,9 +128,12 @@ struct OverviewView: View {
             if let status = model.scanStatus {
                 Card { ScanStatusView(status: status) }
             }
-            if model.isLowOnSpace {
-                StatusBanner(message: "Free space is below your \(model.settings.lowSpaceThresholdGB) GB warning threshold. Start with the largest item below.", isError: true)
+            if let message = model.lowSpaceMessage {
+                StatusBanner(message: message + " Start with the largest item below.", isError: true)
+            } else if let forecast = model.forecastText {
+                StatusBanner(message: forecast + ". Start with the largest item below.", isError: true)
             }
+            LaunchAtLoginBanner()
             diskCard
             reclaimCard
             if !model.growth.liveAlerts.isEmpty || (model.growth.report?.alerts.isEmpty == false) {
@@ -152,10 +155,12 @@ struct OverviewView: View {
                 if let total = model.totalBytes {
                     Text("of \(ByteFormat.string(total))").font(.title3).foregroundStyle(.secondary)
                 }
-                Spacer()
-                if let date = model.lastScanAt {
-                    Text("Scanned \(date, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
+                if let purgeable = model.purgeableBytes {
+                    Text("+\(ByteFormat.string(purgeable)) purgeable").font(.callout).foregroundStyle(.secondary)
+                        .help("Space macOS can free on demand (snapshots, iCloud copies). Not counted as free by df.")
                 }
+                Spacer()
+                LastScanLabel(model: model)
             }
             if let total = model.totalBytes, let free = model.freeBytes {
                 DiskUsageBar(totalBytes: total, freeBytes: free, reclaimable: model.reclaimable, height: 18)

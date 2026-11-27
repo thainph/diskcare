@@ -232,9 +232,14 @@ public enum Cleaner {
         }
     }
 
-    /// Free space available for important usage on the volume containing `path`.
+    /// Free space on the volume containing `path`, as `df` reports it. Use this to measure what a
+    /// cleanup freed: the important-usage value also counts purgeable space and moves on its own.
     public static func availableCapacity(at path: String) -> Int64? {
-        let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return values?.volumeAvailableCapacityForImportantUsage
+        VolumeSpace.available(at: path)
+    }
+
+    /// Free space for important usage (includes purgeable space) on the volume containing `path`.
+    public static func importantAvailableCapacity(at path: String) -> Int64? {
+        VolumeSpace.importantAvailable(at: path)
     }
 }
