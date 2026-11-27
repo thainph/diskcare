@@ -10,6 +10,7 @@ struct DiskCareApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)
+                .id(model.settings.language)
         } label: {
             MenuBarLabel(model: model)
         }
@@ -21,13 +22,13 @@ struct DiskCareApp: App {
         .defaultSize(width: 980, height: 680)
         .defaultLaunchBehavior(.suppressed)
 
-        Window("Welcome to DiskCare", id: WelcomeView.windowID) {
+        Window(L("Welcome to DiskCare", "Chào mừng đến với DiskCare"), id: WelcomeView.windowID) {
             WelcomeView(model: model)
         }
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
 
-        Window("DiskCare Settings", id: SettingsView.windowID) {
+        Window(L("DiskCare Settings", "Cài đặt DiskCare"), id: SettingsView.windowID) {
             SettingsView(settings: model.settings, onChange: { model.startSchedule() })
         }
         .windowResizability(.contentSize)
@@ -47,6 +48,7 @@ private struct MenuBarLabel: View {
     var body: some View {
         Label(model.menuTitle, systemImage: model.isLowOnSpace ? "externaldrive.badge.exclamationmark" : "internaldrive")
             .labelStyle(.titleAndIcon)
+            .accessibilityLabel(model.freeBytes.map { L("DiskCare, \(ByteFormat.string($0)) free", "DiskCare, còn trống \(ByteFormat.string($0))") } ?? "DiskCare")
             .task {
                 model.startOnce()
                 if !model.settings.hasCompletedWelcome {
