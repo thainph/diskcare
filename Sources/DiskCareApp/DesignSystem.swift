@@ -115,6 +115,20 @@ struct Card<Content: View>: View {
     }
 }
 
+/// Fixed, opaque colors for content. The window itself is never translucent: what is behind it
+/// (other apps, the wallpaper, an inactive window) must not change how the page looks.
+enum Palette {
+    static let pageBackground = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.115, alpha: 1) : NSColor(red: 0.953, green: 0.957, blue: 0.965, alpha: 1)
+    })
+
+    static let card = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.175, alpha: 1) : .white
+    })
+}
+
 enum Metrics {
     static let cardRadius: CGFloat = 18
     static let pagePadding: CGFloat = 24
@@ -123,8 +137,9 @@ enum Metrics {
 extension View {
     /// Solid-enough surface for readable content (cards, lists).
     func contentSurface(cornerRadius: CGFloat = Metrics.cardRadius) -> some View {
-        background(.background.opacity(0.78), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+        background(Palette.card, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(.separator.opacity(0.5), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
     }
 
     /// Liquid Glass on macOS 26, a thin material before it: for controls floating above content.

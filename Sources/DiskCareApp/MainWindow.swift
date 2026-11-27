@@ -60,7 +60,12 @@ struct MainWindow: View {
         } detail: {
             detail(model.selectedSection ?? .overview)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Palette.pageBackground.ignoresSafeArea())
                 .navigationTitle((model.selectedSection ?? .overview).title)
+                // Each page has its own header: no second title in the toolbar, and a toolbar that
+                // floats over the page (glass on macOS 26) instead of a separate strip.
+                .toolbar(removing: .title)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .toolbar {
                     ToolbarItemGroup {
                         if let status = model.scanStatus {
@@ -87,7 +92,6 @@ struct MainWindow: View {
                 }
         }
         .frame(minWidth: 900, minHeight: 620)
-        .containerBackground(.thinMaterial, for: .window)
         .sheet(isPresented: $model.isReviewing) { ReviewSheet(model: model) }
         .id(model.settings.language)
     }
