@@ -11,6 +11,8 @@ final class AppModel {
     let settings: AppSettings
     /// Scan history, 7-day growth and the live FSEvents growth watcher.
     let growth = GrowthModel()
+    /// "Where is the space?": large folders outside projects and caches.
+    let explain = ExplainModel()
     /// Global developer caches (~/Library/Caches, ~/.cache, package manager stores…).
     @ObservationIgnored private(set) lazy var caches = CachesModel(
         moveToTrash: { [settings] in settings.moveToTrash },
@@ -37,6 +39,8 @@ final class AppModel {
     @ObservationIgnored private var spaceMonitor: Task<Void, Never>?
     @ObservationIgnored var didStart = false
     private static let spaceAlertState = "spaceAlertState"
+    /// Free space and known bytes at the last exploration (`ExploreTrigger`).
+    private static let exploreBaseline = "exploreBaseline"
     /// Free-space check interval: resource values only, no scanning.
     static let spaceCheckInterval: Duration = .seconds(15 * 60)
 
@@ -302,6 +306,58 @@ final class AppModel {
         guard let space else { return }
         forecast = await growth.record(FreeSample(date: Date(), space: space))
         evaluateSpaceAlerts()
+        await exploreIfUnexplained(space)
+    }
+
+    // MARK: Explain
+
+    /// Bytes the scans account for: projects, caches (incl. app data) and Docker.
+    var knownBytes: Int64 {
+        (report?.stats.bytes ?? 0) + (caches.report?.totalBytes ?? 0) + (dockerReport.map { $0.available ? $0.totalBytes : 0 } ?? 0)
+    }
+
+    /// Reads the home folder outside roots and caches, then remembers free space for the trigger.
+    @discardableResult
+    func explainDiskUsage(priority: ScanPriority) async -> DiskExplanation? {
+        var known = [KnownSource(name: "projects", bytes: report?.stats.bytes ?? 0),
+                     KnownSource(name: "caches & app data", bytes: caches.report?.totalBytes ?? 0)]
+        if let dockerReport, dockerReport.available { known.append(KnownSource(name: "Docker", bytes: dockerReport.totalBytes)) }
+        let options = DiskExplorer.Options(
+            scanRoots: report?.roots ?? settings.roots.map(ScanOptions.normalize),
+            cachePaths: caches.report?.entries.flatMap(\.paths) ?? [], known: known, priority: priority
+        )
+        let result = await explain.run(options)
+        if let available = result?.volume?.availableBytes {
+            saveExploreBaseline(ExploreTrigger(availableBytes: available, knownBytes: knownBytes))
+        }
+        return result
+    }
+
+    /// Free space fell by `max(10 GB, 2%)` since the last exploration and the scans explain less
+    /// than half of it: look for it in the background and say where it went.
+    private func exploreIfUnexplained(_ space: VolumeSpace) async {
+        guard report != nil, !isScanning, !explain.isRunning else { return }
+        guard let baseline = loadExploreBaseline() else {
+            saveExploreBaseline(ExploreTrigger(availableBytes: space.availableBytes, knownBytes: knownBytes))
+            return
+        }
+        guard baseline.shouldExplore(availableBytes: space.availableBytes, knownBytes: knownBytes, totalBytes: space.totalBytes),
+              let result = await explainDiskUsage(priority: .background), !result.cancelled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "\(ByteFormat.string(baseline.availableBytes - space.availableBytes)) of free space went somewhere new"
+        let top = result.unexplained.prefix(3).map { "\($0.path.abbreviatingHome) \(ByteFormat.string($0.bytes))" }
+        content.body = top.isEmpty
+            ? "Your projects and caches do not explain it. Open DiskCare › Overview › Where is the space?"
+            : "Largest folders outside your projects and caches: " + top.joined(separator: ", ") + "."
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "explain", content: content, trigger: nil))
+    }
+
+    private func loadExploreBaseline() -> ExploreTrigger? {
+        UserDefaults.standard.data(forKey: Self.exploreBaseline).flatMap { try? JSONDecoder().decode(ExploreTrigger.self, from: $0) }
+    }
+
+    private func saveExploreBaseline(_ trigger: ExploreTrigger) {
+        if let data = try? JSONEncoder().encode(trigger) { UserDefaults.standard.set(data, forKey: Self.exploreBaseline) }
     }
 
     /// Scans in the background right away when the last full scan is older than twice the schedule

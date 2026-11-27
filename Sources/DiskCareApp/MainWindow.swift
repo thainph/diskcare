@@ -136,6 +136,7 @@ struct OverviewView: View {
             LaunchAtLoginBanner()
             diskCard
             reclaimCard
+            ExplainCard(model: model)
             if !model.growth.liveAlerts.isEmpty || (model.growth.report?.alerts.isEmpty == false) {
                 Card(title: "Growing fast", systemImage: "chart.line.uptrend.xyaxis") {
                     GrowthView(model: model.growth, maxRows: 3, showsHeader: false)
