@@ -487,8 +487,7 @@ final class AppModel {
         if !sources.isEmpty {
             lines.append(L("Growing fastest: ", "Tăng nhanh nhất: ") + sources.map { "\(label(for: $0)) +\(ByteFormat.string($0.delta))" }.joined(separator: ", ") + ".")
         }
-        let reclaimable = selectedPlan.reduce(Int64(0)) { $0 + $1.bytes }
-            + (dockerReport?.reclaimableBytes ?? 0)
+        let reclaimable = reclaimableTotal
         lines.append(reclaimable > 0
             ? L("DiskCare found \(ByteFormat.string(reclaimable)) you can reclaim. Open DiskCare from the menu bar.",
                 "DiskCare tìm thấy \(ByteFormat.string(reclaimable)) có thể giải phóng. Mở DiskCare từ thanh menu.")
