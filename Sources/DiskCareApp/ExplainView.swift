@@ -122,7 +122,8 @@ struct ExplainCard: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.path.abbreviatingHome + (row.isRemainder ? L(" (other files)", " (các file khác)") : ""))
-                    .lineLimit(1).truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
                 if row.containsProjects {
                     Label(L("Contains git repositories", "Có kho git bên trong"), systemImage: "arrow.triangle.branch")
                         .font(.caption).foregroundStyle(.secondary)

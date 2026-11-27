@@ -67,7 +67,7 @@ struct MainWindow: View {
                 .toolbar(removing: .title)
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .toolbar {
-                    ToolbarItemGroup {
+                    ToolbarItemGroup(placement: .primaryAction) {
                         if let status = model.scanStatus {
                             Text("\(status.title) (\(status.step)/\(status.totalSteps))")
                                 .font(.caption).foregroundStyle(.secondary)

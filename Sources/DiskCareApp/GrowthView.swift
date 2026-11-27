@@ -206,8 +206,9 @@ struct GrowthView: View {
                     ForEach(rows) { entry in
                         if entry.id != rows.first?.id { Divider() }
                         GrowthRow(
-                            title: shortPath(entry.path),
-                            subtitle: "\(entry.kind?.rawValue ?? L("workspace", "thư mục làm việc")) · \(entry.isNew ? L("new", "mới") : ByteFormat.string(entry.bytesThen)) → \(ByteFormat.string(entry.bytesNow))",
+                            title: shortPath(entry.path, components: 2),
+                            subtitle: entry.path.abbreviatingHome,
+                            change: "\(entry.kind?.rawValue ?? L("workspace", "thư mục làm việc")) · \(entry.isNew ? L("new", "mới") : ByteFormat.string(entry.bytesThen)) → \(ByteFormat.string(entry.bytesNow))",
                             delta: entry.delta, path: entry.path, emphasized: alerted.contains(entry.path)
                         )
                     }
@@ -257,7 +258,8 @@ struct GrowingFastestList: View {
         case .artifact:
             return GrowthRow(
                 title: shortPath(source.name, components: 2),
-                subtitle: "\(source.name.abbreviatingHome) · \(then) → \(ByteFormat.string(source.bytesNow))",
+                subtitle: source.name.abbreviatingHome,
+                change: "\(then) → \(ByteFormat.string(source.bytesNow))",
                 delta: source.delta, path: source.name, emphasized: false
             )
         }
@@ -276,6 +278,8 @@ struct GrowingFastestList: View {
 private struct GrowthRow: View {
     let title: String
     let subtitle: String
+    /// "new → 1.8 GB": shown on its own line under the full path.
+    var change: String?
     let delta: Int64
     let path: String?
     /// Passed a growth alert threshold: bold with a warning icon, not color alone.
@@ -284,8 +288,14 @@ private struct GrowthRow: View {
     var body: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).lineLimit(1).truncationMode(.head)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                // Full names and paths, wrapped: a truncated path is hard to recognise.
+                Text(title).fixedSize(horizontal: false, vertical: true)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if let change {
+                    Text(change).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
             }
             Spacer(minLength: 8)
             if emphasized {

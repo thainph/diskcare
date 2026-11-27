@@ -154,23 +154,14 @@ extension View {
         }
     }
 
-    /// The page's main action: prominent glass button on macOS 26.
-    @ViewBuilder
+    /// The page's main action: the system's accent-colored button. (`.glassProminent` turns
+    /// near-black when disabled and loses the accent color on content backgrounds.)
     func primaryActionStyle() -> some View {
-        if #available(macOS 26.0, *) {
-            buttonStyle(.glassProminent)
-        } else {
-            buttonStyle(.borderedProminent)
-        }
+        buttonStyle(.borderedProminent).tint(.accentColor)
     }
 
-    @ViewBuilder
     func secondaryActionStyle() -> some View {
-        if #available(macOS 26.0, *) {
-            buttonStyle(.glass)
-        } else {
-            buttonStyle(.bordered)
-        }
+        buttonStyle(.bordered)
     }
 }
 
