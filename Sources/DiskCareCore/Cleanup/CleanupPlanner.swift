@@ -71,7 +71,7 @@ public enum CleanupPlanner {
         for artifact in report.artifacts {
             guard artifact.kind.isRegenerable,
                   criteria.kinds?.contains(artifact.kind) ?? true,
-                  artifact.totals.bytes >= criteria.minimumBytes,
+                  artifact.totals.bytes >= criteria.minimumBytes || artifact.kind == .cleanupLeftover,
                   !removedWorktrees.contains(where: { artifact.path.hasPrefix($0) }) else { continue }
 
             let workspace = artifact.workspacePath.flatMap { workspaces[$0] }

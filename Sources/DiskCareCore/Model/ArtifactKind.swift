@@ -65,7 +65,7 @@ enum ArtifactRules {
         case ".gradle": return .gradle
         case ".dart_tool": return .dartTool
         case "DerivedData": return .xcodeDerivedData
-        case _ where name.hasPrefix(Cleaner.stagingPrefix): return .cleanupLeftover
+        case _ where Cleaner.isStagingName(name): return .cleanupLeftover
         default: break
         }
         if vendored { return nil }

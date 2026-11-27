@@ -90,8 +90,9 @@ final class CachesModel {
         selection = Set(report?.allSafeIDs ?? [])
     }
 
-    func cleanSelected() {
-        let targets = selectedTargets
+    /// `targets`: what the user confirmed (a rescan may have changed the selection meanwhile).
+    func cleanSelected(_ confirmed: [CacheCleanTarget]? = nil) {
+        let targets = confirmed ?? selectedTargets
         guard !targets.isEmpty, !isCleaning else { return }
         isCleaning = true
         lastMessage = nil
@@ -123,6 +124,9 @@ struct CachesView: View {
     var listMaxHeight: CGFloat? = 320
     @State private var confirming = false
     @State private var confirmingAgain = false
+    /// Targets as shown in the first dialog; the second one cleans exactly these.
+    @State private var confirmedTargets: [CacheCleanTarget] = []
+    @State private var secondReason = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -149,10 +153,13 @@ struct CachesView: View {
         .task { if model.report == nil { model.scan() } }
         .confirmationDialog(confirmTitle, isPresented: $confirming) {
             Button(model.usesTrash ? "Move to Trash" : "Clean", role: .destructive) {
-                if model.secondConfirmationReason != nil {
-                    confirmingAgain = true
+                confirmedTargets = model.selectedTargets
+                if let reason = model.secondConfirmationReason {
+                    secondReason = reason
+                    // Present after this dialog has gone, or SwiftUI may drop the alert.
+                    DispatchQueue.main.async { confirmingAgain = true }
                 } else {
-                    model.cleanSelected()
+                    model.cleanSelected(confirmedTargets)
                 }
             }
         } message: {
@@ -160,11 +167,11 @@ struct CachesView: View {
         }
         .alert("Are you sure?", isPresented: $confirmingAgain) {
             Button("Cancel", role: .cancel) {}
-            Button("Yes, \(model.usesTrash ? "move to Trash" : "clean") \(ByteFormat.string(model.selectedBytes))", role: .destructive) {
-                model.cleanSelected()
+            Button("Yes, \(model.usesTrash ? "move to Trash" : "clean") \(ByteFormat.string(confirmedTargets.reduce(0) { $0 + $1.bytes }))", role: .destructive) {
+                model.cleanSelected(confirmedTargets)
             }
         } message: {
-            Text(model.secondConfirmationReason ?? "")
+            Text(secondReason)
         }
     }
 

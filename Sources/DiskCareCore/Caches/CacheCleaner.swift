@@ -113,7 +113,15 @@ public enum CacheCleaner {
         let freeBefore = Cleaner.availableCapacity(at: home)
         let results = LockedArray<CacheCleanOutcome?>(repeating: nil, count: targets.count)
         DispatchQueue.concurrentPerform(iterations: targets.count) { index in
-            let outcome = clean(targets[index], mode: mode, resolver: resolver, home: home)
+            // Logged before as well, so a crash mid-delete still leaves a trace.
+            let target = targets[index]
+            for path in target.paths {
+                log.append(DeletionRecord(
+                    path: path, bytes: target.paths.count == 1 ? target.bytes : 0, mode: mode.rawValue,
+                    source: target.kind == .item ? "cache-item" : "cache-entry", result: "started"
+                ))
+            }
+            let outcome = clean(target, mode: mode, resolver: resolver, home: home)
             for path in outcome.target.paths {
                 log.append(DeletionRecord(
                     path: path, bytes: outcome.target.paths.count == 1 ? outcome.target.bytes : 0, mode: outcome.action,
@@ -146,14 +154,23 @@ public enum CacheCleaner {
 
         if target.kind == .item {
             let path = target.paths.first ?? ""
-            if let problem = DeletionGuard(roots: target.containers, home: home).checkRemoval(path) {
+            // Containers come from the report: they must themselves be ordinary cache locations.
+            let emptyCheck = DeletionGuard(roots: [], home: home)
+            if let problem = target.containers.lazy.compactMap({ emptyCheck.checkEmptying($0) }).first {
+                return outcome("skipped", error: "cache location refused: \(problem)")
+            }
+            let verdict = DeletionGuard(roots: target.containers, home: home).approveRemoval(path)
+            if let problem = verdict.problem {
                 return outcome("skipped", error: problem)
             }
             do {
-                if mode == .delete, (path as NSString).lastPathComponent.hasPrefix(Cleaner.stagingPrefix) {
+                if mode == .trash {
+                    try Cleaner.trash(path, expected: verdict.identity)
+                } else if Cleaner.isStagingName((path as NSString).lastPathComponent) {
+                    try Cleaner.verify(path, expected: verdict.identity)
                     try Cleaner.removeStaged(path, original: path)
                 } else {
-                    try remove(path, mode: mode)
+                    try Cleaner.removeTree(path, expected: verdict.identity)
                 }
                 return outcome(mode == .trash ? "trash dir" : "delete dir")
             } catch {
@@ -181,11 +198,12 @@ public enum CacheCleaner {
         let action = (commandResult != nil ? "command failed, " : "") + (mode == .trash ? "trash contents" : "delete contents")
         var errors: [String] = []
         for path in target.paths {
-            if let problem = checkCacheRoot(path, home: home) {
+            let verdict = DeletionGuard(roots: [], home: home).approveEmptying(path)
+            if let problem = verdict.problem {
                 errors.append("\(path.abbreviatingHome): \(problem)")
                 continue
             }
-            errors += deleteContents(of: path, mode: mode)
+            errors += deleteContents(of: path, mode: mode, expected: verdict.identity)
         }
         return outcome(action, commandResult, error: errors.isEmpty ? nil : errors.prefix(3).joined(separator: "; "))
     }
@@ -197,14 +215,15 @@ public enum CacheCleaner {
     }
 
     /// Deletes every child of `root` and keeps `root` itself. Read-only trees (Go modules) are
-    /// made writable and retried once.
-    static func deleteContents(of root: String, mode: CleanupMode) -> [String] {
+    /// made writable and retried once. Stops if `root` stops being the approved directory.
+    static func deleteContents(of root: String, mode: CleanupMode, expected: DeletionGuard.FileID? = nil) -> [String] {
         var errors: [String] = []
         for attempt in 0..<2 {
             errors = []
             let names = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
             for name in names {
                 do {
+                    try Cleaner.verify(root, expected: expected)
                     try remove(root + "/" + name, mode: mode)
                 } catch {
                     errors.append("\(name): \(error)")

@@ -149,7 +149,8 @@ import Testing
         #expect(entry.items.contains { $0.name == "b" && !$0.isRecommended })
         #expect(!entry.items.contains { $0.name.hasPrefix(".") })
         #expect(entry.items.first { $0.name == "chromium-1228" }?.id == "playwright/chromium-1228")
-        #expect(Set(report.allSafeIDs) == Set(entry.recommendedItems.map(\.id)))
+        // Old revisions mean a re-download: suggested, but never picked by "Select all safe".
+        #expect(report.allSafeIDs.isEmpty && entry.recommendedItems.allSatisfy { !$0.isPreselectable })
 
         // Cleaning one item deletes only that directory.
         let targets = try CacheCleaner.targets(ids: ["playwright/chromium-1228"], in: report)

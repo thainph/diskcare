@@ -82,7 +82,7 @@ import Testing
         let guardrail = DeletionGuard(roots: [base + "/root"])
         #expect(guardrail.checkRemoval(base + "/root/proj/node_modules") == "not a directory (symlink?)")
         #expect(guardrail.checkRemoval(base + "/root/proj/escape/node_modules") == "outside scan roots")
-        #expect(guardrail.checkRemoval(base + "/root/proj/../../root/proj") == nil)
+        #expect(guardrail.checkRemoval(base + "/root/proj/../../root/proj") == "path is not normalized")
         #expect(guardrail.checkRemoval(base + "/root/proj/missing") == "no longer exists")
         #expect(guardrail.checkRemoval("relative/path") != nil)
     }
@@ -107,6 +107,68 @@ import Testing
         #expect(cargoHome.checkEmptying(home + "/.config/tool") != nil)
     }
 
+    @Test func unnormalizedPathsAreRefused() throws {
+        let base = try makeRoot()
+        defer { try? fm.removeItem(atPath: base) }
+        try mkdir(base + "/root/proj/node_modules")
+        try mkdir(base + "/root/proj/src")
+        try mkdir(base + "/root/shared/src")
+        try fm.createSymbolicLink(atPath: base + "/root/other", withDestinationPath: base + "/root/shared")
+        let guardrail = DeletionGuard(roots: [base + "/root"])
+        // `..` resolves to the project itself; a trailing slash follows a final symlink.
+        #expect(guardrail.checkRemoval(base + "/root/proj/node_modules/..") == "path is not normalized")
+        #expect(guardrail.checkRemoval(base + "/root/other/") == "path is not normalized")
+        #expect(guardrail.checkRemoval(base + "/root/proj//node_modules") == "path is not normalized")
+        #expect(DeletionGuard(roots: []).checkEmptying(base + "/root/proj/.") == "path is not normalized")
+
+        let candidate = CleanupCandidate(
+            action: .deleteArtifact, path: base + "/root/proj/node_modules/..", kind: .nodeModules,
+            bytes: 1, hardlinkedBytes: 0, idleDays: 40, workspacePath: nil, mainRepositoryPath: nil, reason: "test"
+        )
+        let log = DeletionLog(path: base + "/log.jsonl")
+        let outcomes = Cleaner.execute([candidate], roots: [base + "/root"], mode: .delete, log: log)
+        #expect(outcomes.first?.succeeded == false)
+        #expect(fm.fileExists(atPath: base + "/root/proj/src"))
+    }
+
+    @Test func replacedDirectoryIsNotDeleted() throws {
+        let base = try makeRoot()
+        defer { try? fm.removeItem(atPath: base) }
+        try mkdir(base + "/root/proj/node_modules")
+        let verdict = DeletionGuard(roots: [base + "/root"]).approveRemoval(base + "/root/proj/node_modules")
+        #expect(verdict.problem == nil)
+        // Swapped for another directory after the check.
+        try fm.removeItem(atPath: base + "/root/proj/node_modules")
+        try mkdir(base + "/root/proj/node_modules/keep")
+        #expect(throws: CleanupError.self) { try Cleaner.removeTree(base + "/root/proj/node_modules", expected: verdict.identity) }
+        #expect(fm.fileExists(atPath: base + "/root/proj/node_modules/keep"))
+    }
+
+    @Test func personalFoldersAreProtectedEvenUnderARoot() throws {
+        let home = try makeRoot()
+        defer { try? fm.removeItem(atPath: home) }
+        for path in ["/Documents", "/Library/Containers/app", "/go/pkg/mod"] { try mkdir(home + path) }
+        let guardrail = DeletionGuard(roots: [home], home: home)
+        #expect(guardrail.checkRemoval(home + "/Documents") != nil)
+        #expect(guardrail.checkRemoval(home + "/Library/Containers") != nil)
+        #expect(guardrail.checkRemoval(home + "/go") != nil)
+        #expect(guardrail.checkRemoval(home + "/go/pkg/mod") == nil)
+        #expect(DeletionGuard(roots: [], home: home).checkEmptying(home + "/Documents") != nil)
+    }
+
+    @Test func forgedItemContainerIsRefused() throws {
+        let home = try makeRoot()
+        defer { try? fm.removeItem(atPath: home) }
+        try mkdir(home + "/project/src")
+        let forged = CacheCleanTarget(
+            id: "x/project", kind: .item, title: "x", safety: .safe, paths: [home + "/project"],
+            containers: [home], bytes: 0, nativeCommand: nil, fallback: .deleteContents
+        )
+        let result = CacheCleaner.clean([forged], resolver: CommandResolver(searchPaths: []), home: home)
+        #expect(result.outcomes.first?.succeeded == false)
+        #expect(fm.fileExists(atPath: home + "/project/src"))
+    }
+
     // MARK: Interrupted deletes
 
     @Test func failedDeleteReportsItsStagingDirectory() throws {
@@ -129,15 +191,16 @@ import Testing
     }
 
     @Test func leftoverStagingIsPlannedRegardlessOfActivity() {
-        #expect(ArtifactRules.classify(directoryName: Cleaner.stagingPrefix + "ABC", parentMarkers: []) == .cleanupLeftover)
-        #expect(ArtifactRules.classify(directoryName: Cleaner.stagingPrefix + "ABC", parentMarkers: [], vendored: true) == .cleanupLeftover)
+        #expect(ArtifactRules.classify(directoryName: Cleaner.stagingPrefix + "6F9619FF-8B86-D011-B42D-00C04FC964FF", parentMarkers: []) == .cleanupLeftover)
+        #expect(ArtifactRules.classify(directoryName: Cleaner.stagingPrefix + "6F9619FF-8B86-D011-B42D-00C04FC964FF", parentMarkers: [], vendored: true) == .cleanupLeftover)
+        #expect(ArtifactRules.classify(directoryName: Cleaner.stagingPrefix + "notes", parentMarkers: []) == nil, "user dirs that only look alike")
         var totals = Totals()
-        totals.bytes = 5_000_000
+        totals.bytes = 5_000  // below the default minimum: leftovers are finished anyway
         let now = Date()
         let report = ScanReport(
             roots: ["/w"], scannedAt: now, stats: ScanStats(), gitDurationSeconds: 0,
             artifacts: [
-                ArtifactEntry(path: "/w/app/" + Cleaner.stagingPrefix + "X", kind: .cleanupLeftover, totals: totals, workspacePath: nil, projectLastChangeAt: now),
+                ArtifactEntry(path: "/w/app/" + Cleaner.stagingPrefix + "6F9619FF-8B86-D011-B42D-00C04FC964FF", kind: .cleanupLeftover, totals: totals, workspacePath: nil, projectLastChangeAt: now),
                 ArtifactEntry(path: "/w/app/node_modules", kind: .nodeModules, totals: totals, workspacePath: nil, projectLastChangeAt: now),
             ],
             workspaces: []
@@ -194,7 +257,7 @@ import Testing
         let home = ScanOptions.normalize(URL(fileURLWithPath: fm.temporaryDirectory.appendingPathComponent("diskcare-leftover-\(UUID().uuidString)").path).resolvingSymlinksInPath().path)
         defer { try? fm.removeItem(atPath: home) }
         let cache = home + "/.cache/tool"
-        let staging = cache + "/" + Cleaner.stagingPrefix + "ABC"
+        let staging = cache + "/" + Cleaner.stagingPrefix + "6F9619FF-8B86-D011-B42D-00C04FC964FF"
         try fm.createDirectory(atPath: staging + "/deep", withIntermediateDirectories: true)
         try Data(count: 4_000).write(to: URL(fileURLWithPath: staging + "/deep/blob"))
         try Data(count: 10).write(to: URL(fileURLWithPath: cache + "/keep"))
@@ -210,6 +273,6 @@ import Testing
         #expect(!fm.fileExists(atPath: staging))
         #expect(fm.fileExists(atPath: cache + "/keep"))
         let records = DeletionLog(path: home + "/Library/Application Support/DiskCare/deletions.jsonl").records()
-        #expect(records.map(\.source) == ["cache-item"] && records.first?.path == staging)
+        #expect(records.map(\.result) == ["started", "ok"] && records.allSatisfy { $0.source == "cache-item" && $0.path == staging })
     }
 }

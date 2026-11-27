@@ -118,12 +118,11 @@ public enum CacheScanner {
         }
         return candidates.map { candidate in
             let mark = marks[candidate.id]
-            // Old browser/tool versions and stale DerivedData are pure re-downloads/rebuilds.
+            // Old versions and stale projects cost a re-download or rebuild: suggested, never preselected.
             return CacheItem(
                 id: candidate.id, entryID: definition.id, name: candidate.name, path: candidate.node.path,
                 bytes: candidate.node.total.bytes, hardlinkedBytes: candidate.node.total.hardlinkedBytes,
-                lastUsedAt: candidate.lastUsedAt, isRecommended: mark?.recommended ?? false,
-                isPreselectable: true, reason: mark?.reason
+                lastUsedAt: candidate.lastUsedAt, isRecommended: mark?.recommended ?? false, reason: mark?.reason
             )
         }
     }
@@ -134,7 +133,7 @@ public enum CacheScanner {
         let multipleRoots = roots.count > 1
         return roots.flatMap { root in
             index.descendants(of: root, upTo: TreeIndex.defaultDepth)
-                .filter { ($0.path as NSString).lastPathComponent.hasPrefix(Cleaner.stagingPrefix) }
+                .filter { Cleaner.isStagingName(($0.path as NSString).lastPathComponent) }
                 .map { node in
                     let relative = String(node.path.dropFirst(root.path.count + 1))
                     let name = (multipleRoots ? (root.path as NSString).lastPathComponent + "/" : "") + relative

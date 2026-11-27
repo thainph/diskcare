@@ -8,6 +8,15 @@ public struct DeletionGuard: Sendable {
     struct FileID: Hashable, Sendable {
         let device: Int32
         let inode: UInt64
+
+        init(device: Int32, inode: UInt64) {
+            self.device = device
+            self.inode = inode
+        }
+
+        init(_ info: stat) {
+            self.init(device: info.st_dev, inode: info.st_ino)
+        }
     }
 
     /// Directories a removed path must lie strictly inside (scan roots, or a cache entry's paths).
@@ -30,38 +39,71 @@ public struct DeletionGuard: Sendable {
         var homes = [home]
         let realHome = NSHomeDirectory()
         if realHome != home { homes.append(realHome) }
-        var paths = ["/", "/Users", "/Applications", "/Library", "/System", "/Volumes", "/private", "/tmp", "/var"]
+        var paths = ["/", "/Users", "/Applications", "/Library", "/System", "/Volumes", "/private", "/tmp", "/var",
+                     "/usr", "/usr/local", "/opt", "/opt/homebrew", "/etc", "/bin", "/sbin"]
         for home in homes {
             paths += [home, home + "/Library", home + "/Library/Caches", home + "/Library/Application Support",
-                      home + "/Library/Developer", home + "/.cache", home + "/.config", home + "/.local",
+                      home + "/Library/Developer", home + "/Library/Containers", home + "/Library/Group Containers",
+                      home + "/Library/Mobile Documents", home + "/Library/CloudStorage", home + "/Library/Mail",
+                      home + "/Desktop", home + "/Documents", home + "/Downloads", home + "/Pictures", home + "/Movies",
+                      home + "/Music", home + "/go", home + "/.cache", home + "/.config", home + "/.local",
                       home + "/.local/share", home + "/.cargo", home + "/.terraform.d", home + "/.docker", home + "/.ssh"]
         }
-        if let cargoHome = environment["CARGO_HOME"], cargoHome.hasPrefix("/") { paths.append(cargoHome) }
+        for name in ["CARGO_HOME", "GOPATH"] {
+            for value in (environment[name] ?? "").split(separator: ":") where value.hasPrefix("/") { paths.append(String(value)) }
+        }
         return paths
+    }
+
+    /// The verdict for one path: the identity that was checked (deletion must still find it there),
+    /// or why the path is refused.
+    public struct Verdict: Sendable {
+        let identity: FileID?
+        public let problem: String?
     }
 
     /// Why `path` must not be removed (nil = allowed): it must be an existing real directory strictly
     /// inside a root, and neither a protected location, a root, nor an ancestor of one.
     public func checkRemoval(_ path: String) -> String? {
-        guard path.hasPrefix("/") else { return "path is not absolute" }
+        approveRemoval(path).problem
+    }
+
+    public func approveRemoval(_ path: String) -> Verdict {
+        func refuse(_ problem: String) -> Verdict { Verdict(identity: nil, problem: problem) }
+        if let problem = Self.pathProblem(path) { return refuse(problem) }
         guard let canonical = Self.canonicalDirectory(path) else {
-            return insideRoots(Self.deepestExistingAncestor(of: path), includingSelf: true) ? Self.missingReason(path) : "outside scan roots"
+            return refuse(insideRoots(Self.deepestExistingAncestor(of: path), includingSelf: true) ? Self.missingReason(path) : "outside scan roots")
         }
-        guard let id = Self.identity(followingLinks: canonical) else { return "no longer exists" }
-        guard insideRoots(canonical, includingSelf: false) else { return "outside scan roots" }
-        if protectedChain.contains(id) { return "refusing to delete a protected location" }
-        if rootChain.contains(id) { return "refusing to delete a scan root or its parent" }
-        return nil
+        guard let id = Self.identity(followingLinks: canonical) else { return refuse("no longer exists") }
+        guard insideRoots(canonical, includingSelf: false) else { return refuse("outside scan roots") }
+        if protectedChain.contains(id) { return refuse("refusing to delete a protected location") }
+        if rootChain.contains(id) { return refuse("refusing to delete a scan root or its parent") }
+        return Verdict(identity: id, problem: nil)
     }
 
     /// Why `path` must not be emptied (its children deleted, itself kept); nil = allowed.
     public func checkEmptying(_ path: String) -> String? {
-        guard path.hasPrefix("/") else { return "path is not absolute" }
+        approveEmptying(path).problem
+    }
+
+    public func approveEmptying(_ path: String) -> Verdict {
+        func refuse(_ problem: String) -> Verdict { Verdict(identity: nil, problem: problem) }
+        if let problem = Self.pathProblem(path) { return refuse(problem) }
         guard let canonical = Self.canonicalDirectory(path), let id = Self.identity(followingLinks: canonical) else {
-            return Self.missingReason(path)
+            return refuse(Self.missingReason(path))
         }
-        if protectedChain.contains(id) { return "refusing to empty a top-level directory" }
-        guard canonical.split(separator: "/").count >= 3 else { return "path too shallow" }
+        if protectedChain.contains(id) { return refuse("refusing to empty a top-level directory") }
+        guard canonical.split(separator: "/").count >= 3 else { return refuse("path too shallow") }
+        return Verdict(identity: id, problem: nil)
+    }
+
+    /// Only plain absolute paths: a trailing `/` makes the kernel follow a final symlink, and `..`
+    /// makes the checked directory differ from the one `rename` sees.
+    static func pathProblem(_ path: String) -> String? {
+        guard path.hasPrefix("/") else { return "path is not absolute" }
+        guard path != "/" else { return nil }
+        let components = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return "path is not normalized" }
         return nil
     }
 

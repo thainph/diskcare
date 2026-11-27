@@ -105,9 +105,9 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: target.path))
         // No staging directory left behind.
         #expect(try FileManager.default.contentsOfDirectory(atPath: normalizedRoot + "/app").isEmpty)
-        // Both attempts are audited.
+        // Both attempts are audited, before and after.
         let records = log.records()
-        #expect(records.count == 2)
+        #expect(records.count == 4 && records.filter { $0.result == "started" }.count == 2)
         #expect(records.contains { $0.path == target.path && $0.result == "ok" && $0.source == "artifact" && $0.bytes == 10_000 })
         #expect(records.contains { $0.path == outside.path && $0.result == "outside scan roots" })
     }

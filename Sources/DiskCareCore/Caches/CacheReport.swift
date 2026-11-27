@@ -113,12 +113,9 @@ public struct CacheReport: Sendable, Codable {
 
     public var totalBytes: Int64 { entries.reduce(0) { $0 + $1.bytes } }
 
-    /// Bytes in safe caches plus recommended items (old versions, stale projects) of regenerable ones.
+    /// Bytes "Select all safe" / `--all-safe` would clean.
     public var safeReclaimableBytes: Int64 {
-        entries.reduce(0) { total, entry in
-            if entry.safety == .safe, entry.isCleanable { return total + entry.bytes }
-            return total + entry.recommendedItems.outermost().reduce(0) { $0 + $1.bytes }
-        }
+        allSafeIDs.reduce(0) { total, id in total + (entry(id: id)?.bytes ?? item(id: id)?.bytes ?? 0) }
     }
 
     public func entry(id: String) -> CacheEntry? { entries.first { $0.id == id } }
