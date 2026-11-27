@@ -44,7 +44,7 @@ struct CachesList: ParsableCommand {
                 rows.append([
                     "  " + item.id, "  ↳ " + (item.reason ?? ""),
                     ByteFormat.string(item.bytes), item.blockedReason.map { "blocked: \($0)" } ?? (item.isRecommended ? "suggested" : ""),
-                    lastUsed(item.lastUsedAt), "delete dir",
+                    lastUsed(item.lastUsedAt), item.isCleanable && entry.safety.isCleanable ? "delete dir" : "report only",
                 ])
             }
         }

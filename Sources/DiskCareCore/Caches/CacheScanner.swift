@@ -47,7 +47,8 @@ public enum CacheScanner {
 
         // Every cache root is excluded from the others, so nested locations
         // (~/Library/Caches vs ~/Library/Caches/Homebrew) are counted once.
-        var scanOptions = ScanOptions(roots: Array(claimed), excludedPaths: claimed, stayOnDevice: true, priority: options.priority, progress: options.progress)
+        let unreadable = Set(options.definitions.flatMap { $0.excludedPaths(home: options.home) })
+        var scanOptions = ScanOptions(roots: Array(claimed), excludedPaths: claimed.union(unreadable), stayOnDevice: true, priority: options.priority, progress: options.progress)
         if let workers = options.workerCount { scanOptions.workerCount = workers }
         let tree = claimed.isEmpty ? nil : FileSystemScanner.scan(scanOptions)
         var depths: [String: Int] = [:]
@@ -119,6 +120,8 @@ public enum CacheScanner {
         case .versions(let ruleDepth, _, _): depth = ruleDepth
         case .projects: depth = 1
         case .terraformProviders: depth = 4
+        case .largeChildren(let minimumBytes):
+            return largeChildren(definition, minimumBytes: minimumBytes, roots: roots, index: index)
         case .cargoProfiles(let buildDirDepth):
             return cargoItems(definition, buildDirDepth: buildDirDepth, roots: roots, index: index, inUse: inUse, guardrail: guardrail)
         }
@@ -144,7 +147,7 @@ public enum CacheScanner {
             marks = staleProjects(candidates, staleDays: staleDays, now: now)
         case .terraformProviders:
             marks = providerVersions(candidates, roots: roots, used: terraformVersions, now: now)
-        case .cargoProfiles:
+        case .cargoProfiles, .largeChildren:
             marks = [:]
         }
         return candidates.map { candidate in
@@ -174,6 +177,21 @@ public enum CacheScanner {
                         isRecommended: true, isPreselectable: true, reason: "left over from an interrupted cleanup"
                     )
                 }
+        }
+    }
+
+    /// Big application data folders, listed so a full disk is explained; never cleanable.
+    static func largeChildren(_ definition: CacheDefinition, minimumBytes: Int64, roots: [DirectoryNode], index: TreeIndex) -> [CacheItem] {
+        roots.flatMap { root in
+            index.descendants(of: root, depth: 1).filter { $0.total.bytes >= minimumBytes }.map { node in
+                let name = (node.path as NSString).lastPathComponent
+                return CacheItem(
+                    id: definition.id + "/" + name, entryID: definition.id, name: name, path: node.path,
+                    bytes: node.total.bytes, hardlinkedBytes: node.total.hardlinkedBytes,
+                    lastUsedAt: date(node.total.latestModification), isRecommended: false,
+                    reason: "app data: clean it up from inside the app", blockedReason: "holds application data"
+                )
+            }
         }
     }
 

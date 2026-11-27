@@ -377,7 +377,22 @@ public enum CacheCatalog {
             paths: ["~/Library/Caches"], fallback: .none,
             note: "per-app caches not in the catalog (report only)"
         ),
+        appData,
     ]
+
+    /// Everything in Application Support no other entry claims, broken down by app (report only).
+    /// Contacts, iOS backups and Apple's own folders are never read: macOS guards them.
+    static var appData: CacheDefinition {
+        var definition = CacheDefinition(
+            id: "app-data", title: "App data (Application Support)", category: .system, safety: .userData,
+            paths: ["~/Library/Application Support"], fallback: .none,
+            itemRule: .largeChildren(minimumBytes: 2_000_000_000),
+            note: "apps' own data (chats, models, projects); report only"
+        )
+        definition.excludedChildren = ["AddressBook", "MobileSync", "CallHistoryDB", "CallHistoryTransactions",
+                                       "Knowledge", "com.apple.*", "FileProvider", "CloudDocs"]
+        return definition
+    }
 
     // MARK: AI models
 

@@ -69,6 +69,8 @@ public enum CacheItemRule: Sendable, Codable, Equatable {
     /// Terraform plugin cache (`<host>/<namespace>/<name>/<version>`): an old version is only
     /// recommended when no `.terraform.lock.hcl` / `.terraform` of a scanned project uses it.
     case terraformProviders
+    /// Report-only breakdown: one item per child directory of at least `minimumBytes`.
+    case largeChildren(minimumBytes: Int64)
 
     /// Levels below a cache root the scanner must index for this rule.
     var indexDepth: Int {
@@ -77,6 +79,7 @@ public enum CacheItemRule: Sendable, Codable, Equatable {
         case .projects: TreeIndex.defaultDepth
         case .cargoProfiles(let buildDirDepth): buildDirDepth + 3  // [hash…/] triple/profile/incremental
         case .terraformProviders: 4
+        case .largeChildren: 1
         }
     }
 }
@@ -93,6 +96,9 @@ public struct CacheDefinition: Sendable, Codable, Identifiable {
     public var itemRule: CacheItemRule?
     /// Shown next to the entry (what is lost, how it comes back).
     public var note: String?
+    /// Child names (globs) never read at all: privacy-protected folders that would trigger a
+    /// permission prompt, or that only Full Disk Access may open.
+    public var excludedChildren: [String] = []
 
     public init(
         id: String, title: String, category: CacheCategory, safety: CacheSafety, paths: [String],
@@ -108,6 +114,16 @@ public struct CacheDefinition: Sendable, Codable, Identifiable {
         self.fallback = fallback
         self.itemRule = itemRule
         self.note = note
+    }
+
+    /// Existing children of the resolved paths matching `excludedChildren`.
+    public func excludedPaths(home: String = NSHomeDirectory()) -> [String] {
+        guard !excludedChildren.isEmpty else { return [] }
+        return resolvedPaths(home: home).flatMap { path in
+            ((try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [])
+                .filter { name in excludedChildren.contains { fnmatch($0, name, 0) == 0 } }
+                .map { path + "/" + $0 }
+        }
     }
 
     /// Existing directories matching the path patterns.
