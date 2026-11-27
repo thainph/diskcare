@@ -67,6 +67,10 @@ struct MainWindow: View {
                 .toolbar(removing: .title)
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .toolbar {
+                    // Without a title the toolbar packs items at the leading edge: push them right.
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.flexible)
+                    }
                     ToolbarItemGroup(placement: .primaryAction) {
                         if let status = model.scanStatus {
                             Text("\(status.title) (\(status.step)/\(status.totalSteps))")
