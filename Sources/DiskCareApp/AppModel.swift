@@ -15,10 +15,8 @@ final class AppModel {
     let explain = ExplainModel()
     /// Global developer caches (~/Library/Caches, ~/.cache, package manager stores…).
     @ObservationIgnored private(set) lazy var caches = CachesModel(
-        moveToTrash: { [settings] in settings.moveToTrash },
         scanRoots: { [settings] in settings.roots.map(ScanOptions.normalize) },
         terraformDirs: { [weak self] in self?.report.map { $0.artifacts.filter { $0.kind == .terraform }.map(\.path) } },
-        onCleaned: { [weak self] _ in self?.refreshFreeSpace() },
         onScanned: { [weak self] report in self?.growth.didScanCaches(report) }
     )
 
@@ -36,6 +34,8 @@ final class AppModel {
     var selectedPlanPaths: Set<String> = []
     /// The review sheet (one confirmation for everything selected) is open.
     var isReviewing = false
+    /// Part of the Clean up page shown (All, Projects, Caches, Docker).
+    var cleanupFilter: CleanupFilter = .all
     var selectedSection: MainSection? = .overview
 
     private var scheduler: NSBackgroundActivityScheduler?
