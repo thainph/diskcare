@@ -5,7 +5,8 @@
 #   VERSION        marketing version (default: DiskCareVersion.current)
 #   BUILD_NUMBER   CFBundleVersion (default: 1)
 #   ARCH           arm64 (default) or x86_64
-#   SIGN_IDENTITY  "Developer ID Application: …" to sign with hardened runtime; ad-hoc when unset
+#   SIGN_IDENTITY  "Developer ID Application: …" to sign with hardened runtime; otherwise the local
+#                  "DiskCare Local" identity (scripts/make-local-signing-identity.sh) or ad-hoc
 #   OUTPUT_DIR     where DiskCare.app is written (default: .build)
 set -euo pipefail
 
@@ -48,10 +49,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+LOCAL_IDENTITY="DiskCare Local"
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     # Hardened runtime + timestamp are required for notarization. Sign the nested CLI first.
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/diskcare"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+elif security find-certificate -c "$LOCAL_IDENTITY" >/dev/null 2>&1; then
+    # Same identity on every build, so macOS keeps permissions (Full Disk Access) across rebuilds.
+    # Self-signed: no timestamp (Apple's server only stamps Apple-issued certificates).
+    codesign --force --sign "$LOCAL_IDENTITY" "$APP/Contents/Resources/diskcare"
+    codesign --force --sign "$LOCAL_IDENTITY" "$APP"
 else
     codesign --force --deep --sign - "$APP" >/dev/null
 fi
