@@ -261,6 +261,7 @@ struct OverviewView: View {
             .controlSize(.large)
             .disabled(model.safeCleanBytes == 0 || model.isCleaning)
             Button {
+                model.cleanupFilter = .all
                 model.selectedSection = .cleanup
             } label: {
                 Text(L("Review everything", "Xem tất cả")).frame(maxWidth: .infinity)

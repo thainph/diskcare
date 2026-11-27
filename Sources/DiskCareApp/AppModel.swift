@@ -141,11 +141,11 @@ final class AppModel {
         if bytes > 0 { return ByteFormat.string(bytes) }
         switch source {
         case .projects where report == nil, .caches where caches.report == nil:
-            return isScanning ? "pending" : "not scanned"
+            return isScanning ? L("pending", "đang chờ") : L("not scanned", "chưa quét")
         case .docker where dockerReport == nil:
-            return isScanning ? "pending" : "not scanned"
+            return isScanning ? L("pending", "đang chờ") : L("not scanned", "chưa quét")
         case .docker where dockerReport?.available == false:
-            return "not running"
+            return L("not running", "chưa chạy")
         default:
             return empty
         }

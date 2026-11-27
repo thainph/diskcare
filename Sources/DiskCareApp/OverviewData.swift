@@ -63,8 +63,8 @@ struct OverviewSuggestion: Identifiable {
     enum Action {
         /// Select only safe caches and open the review sheet.
         case cleanSafely
-        /// Open the Clean up page.
-        case review
+        /// Open the Clean up page on this tab.
+        case review(CleanupFilter)
         /// Report only: reveal the folders.
         case showInFinder([String])
     }
@@ -207,7 +207,7 @@ extension AppModel {
                 title: L("Old \(entry.title)", "\(entry.title) cũ"),
                 detail: L("\(items.count) unused: \(names). Downloaded again if needed.",
                           "\(items.count) mục không dùng: \(names). Sẽ tải lại nếu cần."),
-                action: .review
+                action: .review(.caches)
             )
         }
         if planBytes > (best?.bytes ?? 0) {
@@ -217,7 +217,7 @@ extension AppModel {
                 title: L("Project build files", "File build của dự án"),
                 detail: L("\(plan.count) \(plan.count == 1 ? "folder" : "folders") in projects untouched for \(days)+ days. Rebuilt on next install or build.",
                           "\(plan.count) thư mục trong dự án hơn \(days) ngày không đụng tới. Build lại khi cài hoặc build lần sau."),
-                action: .review
+                action: .review(.projects)
             )
         }
         return best
@@ -250,7 +250,9 @@ extension AppModel {
     func perform(_ suggestion: OverviewSuggestion) {
         switch suggestion.action {
         case .cleanSafely: reviewSafeClean()
-        case .review: selectedSection = .cleanup
+        case .review(let filter):
+            cleanupFilter = filter
+            selectedSection = .cleanup
         case .showInFinder(let paths): NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(fileURLWithPath: $0) })
         }
     }

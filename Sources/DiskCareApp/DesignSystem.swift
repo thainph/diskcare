@@ -322,7 +322,8 @@ struct DiskUsageBar: View {
             }
             .frame(height: height)
             .accessibilityElement()
-            .accessibilityLabel("Disk: \(ByteFormat.string(freeBytes)) free of \(ByteFormat.string(totalBytes))")
+            .accessibilityLabel(L("Disk: \(ByteFormat.string(freeBytes)) free of \(ByteFormat.string(totalBytes))",
+                                  "Ổ đĩa: trống \(ByteFormat.string(freeBytes)) trên \(ByteFormat.string(totalBytes))"))
 
             if showsLegend {
                 HStack(spacing: 14) {
@@ -403,6 +404,7 @@ struct ScanStatusView: View {
             .font(compact ? .caption : .callout)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Scan step \(status.step) of \(status.totalSteps): \(status.title)")
+        .accessibilityLabel(L("Scan step \(status.step) of \(status.totalSteps): \(status.title)",
+                              "Bước quét \(status.step)/\(status.totalSteps): \(status.title)"))
     }
 }

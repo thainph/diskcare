@@ -137,10 +137,14 @@ struct MenuContent: View {
 
     /// Clean opens the review sheet; Review goes to Clean up; report-only items to Insights.
     private func open(_ suggestion: OverviewSuggestion) {
-        if case .cleanSafely = suggestion.action {
+        switch suggestion.action {
+        case .cleanSafely:
             model.reviewSafeClean()
             showMain()
-        } else {
+        case .review(let filter):
+            model.cleanupFilter = filter
+            openMain(.cleanup)
+        case .showInFinder:
             openMain(suggestion.section)
         }
     }
