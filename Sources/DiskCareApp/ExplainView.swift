@@ -50,7 +50,7 @@ struct ExplainCard: View {
                 rows(explanation)
                 notes(explanation)
                 if !explanation.notReadWithoutFullDiskAccess.isEmpty {
-                    FullDiskAccessHint(folders: explanation.notReadWithoutFullDiskAccess)
+                    FullDiskAccessHint(folders: explanation.notReadWithoutFullDiskAccess, rerun: run)
                 }
             } else if !explain.isRunning {
                 Text(L("Finds large folders outside your projects and known caches. Nothing is deleted.",
@@ -177,7 +177,9 @@ struct ExplainCard: View {
     private func readText(_ explanation: DiskExplanation) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = AppLanguage.resolved.locale
-        let age = formatter.localizedString(for: explanation.exploredAt, relativeTo: Date())
+        let now = Date()
+        guard now.timeIntervalSince(explanation.exploredAt) >= 60 else { return L("Read just now", "Vừa đọc xong") }
+        let age = formatter.localizedString(for: explanation.exploredAt, relativeTo: now)
         return L("Read \(age)", "Đọc \(age)")
     }
 
@@ -186,27 +188,54 @@ struct ExplainCard: View {
     }
 }
 
-/// Privacy folders were skipped: explain why and open the right Settings pane.
+/// Privacy folders were skipped. Access is checked again whenever DiskCare becomes active, so
+/// right after granting it the hint turns into "read them now".
 private struct FullDiskAccessHint: View {
     let folders: [String]
+    let rerun: () -> Void
+    @State private var granted = DiskExplorer.hasFullDiskAccess()
 
     static let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "lock.shield").foregroundStyle(.tint).accessibilityHidden(true)
-            Text(L("\(names) need Full Disk Access to be measured.", "\(names) cần quyền Truy cập toàn bộ ổ đĩa để đo được."))
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button(L("Open Privacy Settings", "Mở cài đặt Quyền riêng tư")) {
-                NSWorkspace.shared.open(Self.settingsURL)
+        VStack(alignment: .leading, spacing: 10) {
+            Label {
+                Text(granted
+                     ? L("Full Disk Access is on. Read again to measure \(names) too.",
+                         "Đã có quyền Truy cập toàn bộ ổ đĩa. Phân tích lại để đo cả \(names).")
+                     : L("\(names) were not measured: they need Full Disk Access.",
+                         "Chưa đo \(names): cần quyền Truy cập toàn bộ ổ đĩa."))
+                    .font(.callout.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: granted ? "checkmark.shield.fill" : "lock.shield").foregroundStyle(granted ? .green : .accentColor)
             }
-            .secondaryActionStyle()
-            .help(L("System Settings › Privacy & Security › Full Disk Access", "Cài đặt hệ thống › Quyền riêng tư & Bảo mật › Truy cập toàn bộ ổ đĩa"))
+            if !granted {
+                Text(L("Turn on DiskCare in System Settings › Privacy & Security › Full Disk Access, then quit and reopen DiskCare. macOS ties the permission to this exact build: after installing a new build, turn it off and on again.",
+                       "Bật DiskCare trong Cài đặt hệ thống › Quyền riêng tư & Bảo mật › Truy cập toàn bộ ổ đĩa, rồi thoát và mở lại DiskCare. macOS gắn quyền với đúng bản build này: sau khi cài bản build mới, hãy tắt rồi bật lại quyền."))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                if granted {
+                    Button(L("Explain again", "Phân tích lại"), action: rerun).primaryActionStyle()
+                } else {
+                    Button(L("Open Privacy Settings", "Mở cài đặt Quyền riêng tư")) {
+                        NSWorkspace.shared.open(Self.settingsURL)
+                    }
+                    .secondaryActionStyle()
+                    Button(L("Quit DiskCare", "Thoát DiskCare")) { NSApp.terminate(nil) }
+                        .secondaryActionStyle()
+                        .help(L("Permissions apply after DiskCare starts again", "Quyền có hiệu lực khi DiskCare mở lại"))
+                }
+            }
         }
         .padding(12)
-        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background((granted ? Color.green : Color.accentColor).opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            granted = DiskExplorer.hasFullDiskAccess()
+        }
     }
 
     private var names: String {

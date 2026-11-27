@@ -185,13 +185,25 @@ public enum DiskExplorer {
         return (children[node.id] ?? []).contains { !$0.markers.isDisjoint(with: .anyGit) }
     }
 
-    /// The TCC database can only be opened with Full Disk Access; without it `open` fails quietly
-    /// (no prompt).
+    /// Files only Full Disk Access can open; without it `open` fails quietly (no prompt). Several,
+    /// because which ones exist depends on the macOS version and the apps in use.
+    static func fullDiskAccessProbes(home: String) -> [String] {
+        [
+            home + "/Library/Application Support/com.apple.TCC/TCC.db",
+            "/Library/Application Support/com.apple.TCC/TCC.db",
+            home + "/Library/Safari/Bookmarks.plist",
+            home + "/Library/Safari/CloudTabs.db",
+            home + "/Library/Mail",
+        ]
+    }
+
     public static func hasFullDiskAccess(home: String = NSHomeDirectory()) -> Bool {
-        let descriptor = open(home + "/Library/Application Support/com.apple.TCC/TCC.db", O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { return false }
-        close(descriptor)
-        return true
+        fullDiskAccessProbes(home: home).contains { path in
+            let descriptor = open(path, O_RDONLY | O_CLOEXEC)
+            guard descriptor >= 0 else { return false }
+            close(descriptor)
+            return true
+        }
     }
 }
 
