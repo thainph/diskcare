@@ -372,11 +372,13 @@ final class AppModel {
         guard baseline.shouldExplore(availableBytes: space.availableBytes, knownBytes: knownBytes, totalBytes: space.totalBytes),
               let result = await explainDiskUsage(priority: .background), !result.cancelled else { return }
         let content = UNMutableNotificationContent()
-        content.title = "\(ByteFormat.string(baseline.availableBytes - space.availableBytes)) of free space went somewhere new"
+        let lost = ByteFormat.string(baseline.availableBytes - space.availableBytes)
+        content.title = L("\(lost) of free space went somewhere new", "\(lost) dung lượng trống đã đi đâu đó mới")
         let top = result.unexplained.prefix(3).map { "\($0.path.abbreviatingHome) \(ByteFormat.string($0.bytes))" }
         content.body = top.isEmpty
-            ? "Your projects and caches do not explain it. Open DiskCare › Overview › Where is the space?"
-            : "Largest folders outside your projects and caches: " + top.joined(separator: ", ") + "."
+            ? L("Your projects and caches do not explain it. Open DiskCare › Insights › Where is the rest?",
+                "Dự án và cache không giải thích được. Mở DiskCare › Phân tích › Phần còn lại ở đâu?")
+            : L("Largest folders outside your projects and caches: ", "Thư mục lớn nhất ngoài dự án và cache: ") + top.joined(separator: ", ") + "."
         try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "explain", content: content, trigger: nil))
     }
 
@@ -470,24 +472,28 @@ final class AppModel {
         var lines: [String] = []
         switch alert {
         case .critical:
-            content.title = "Disk critically low: \(free) free"
+            content.title = L("Disk critically low: \(free) free", "Ổ gần hết chỗ: còn trống \(free)")
         case .warning:
-            content.title = "Disk almost full: \(free) free"
+            content.title = L("Disk almost full: \(free) free", "Ổ sắp đầy: còn trống \(free)")
         case .forecast:
-            content.title = forecastText ?? "Disk is filling up"
+            content.title = forecastText ?? L("Disk is filling up", "Ổ đang đầy dần")
             if let perDay = forecast?.bytesPerDay {
-                lines.append("Free space is falling by about \(ByteFormat.string(Int64(-perDay))) a day (\(free) free now).")
+                let rate = ByteFormat.string(Int64(-perDay))
+                lines.append(L("Free space is falling by about \(rate) a day (\(free) free now).",
+                               "Dung lượng trống giảm khoảng \(rate) mỗi ngày (hiện còn \(free))."))
             }
         }
         if alert != .forecast, let forecastText { lines.append(forecastText + ".") }
         if !sources.isEmpty {
-            lines.append("Growing fastest: " + sources.map { "\(label(for: $0)) +\(ByteFormat.string($0.delta))" }.joined(separator: ", ") + ".")
+            lines.append(L("Growing fastest: ", "Tăng nhanh nhất: ") + sources.map { "\(label(for: $0)) +\(ByteFormat.string($0.delta))" }.joined(separator: ", ") + ".")
         }
         let reclaimable = selectedPlan.reduce(Int64(0)) { $0 + $1.bytes }
             + (dockerReport?.reclaimableBytes ?? 0)
         lines.append(reclaimable > 0
-            ? "DiskCare found \(ByteFormat.string(reclaimable)) you can reclaim. Open DiskCare from the menu bar."
-            : "Open DiskCare from the menu bar to see what is using space.")
+            ? L("DiskCare found \(ByteFormat.string(reclaimable)) you can reclaim. Open DiskCare from the menu bar.",
+                "DiskCare tìm thấy \(ByteFormat.string(reclaimable)) có thể giải phóng. Mở DiskCare từ thanh menu.")
+            : L("Open DiskCare from the menu bar to see what is using space.",
+                "Mở DiskCare từ thanh menu để xem cái gì đang chiếm chỗ."))
         content.body = lines.joined(separator: " ")
         if alert == .critical { content.sound = .default }
         let identifier = alert == .forecast ? "space-forecast" : "low-space"
