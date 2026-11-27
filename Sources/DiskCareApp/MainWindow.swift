@@ -350,8 +350,9 @@ struct GrowthPage: View {
     var body: some View {
         Page {
             PageHeader(
-                title: "Growth",
-                subtitle: "Folders that grew the most over the last \(model.growth.days) days. DiskCare also watches build folders live and notifies you when one grows fast."
+                title: L("Growth", "Mức tăng"),
+                subtitle: L("Folders that grew the most over the last \(model.growth.days) days. DiskCare also watches build folders live and notifies you when one grows fast.",
+                            "Các thư mục tăng nhiều nhất trong \(model.growth.days) ngày qua. DiskCare còn theo dõi trực tiếp thư mục build và báo khi có thư mục tăng nhanh.")
             )
             Card {
                 GrowthView(model: model.growth, maxRows: 25)
@@ -366,10 +367,11 @@ struct DoctorPage: View {
     var body: some View {
         Page {
             PageHeader(
-                title: "Prevention",
-                subtitle: "Tool settings that stop the same waste from coming back, e.g. sharing Terraform providers or Rust build output across projects. Fixes show the exact change and back up the file first."
+                title: L("Prevention", "Phòng ngừa"),
+                subtitle: L("Tool settings that stop the same waste from coming back, e.g. sharing Terraform providers or Rust build output across projects. Fixes show the exact change and back up the file first.",
+                            "Thiết lập công cụ để rác cũ không quay lại, ví dụ dùng chung provider Terraform hay output build Rust giữa các dự án. Mỗi lần sửa đều hiện thay đổi cụ thể và sao lưu file trước.")
             )
-            Card {
+            Card(title: L("Checks", "Các mục kiểm tra"), systemImage: "stethoscope") {
                 DoctorView(report: model.report, caches: model.caches.report, showsHeader: false, listMaxHeight: nil)
             }
         }
