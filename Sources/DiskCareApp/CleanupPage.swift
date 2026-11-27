@@ -192,22 +192,7 @@ private struct TierSection: View {
         let cacheIDs = entries.flatMap { entry -> [String] in
             tier == .safe && entry.isCleanable ? [entry.id] : entry.recommendedItems.filter(\.isCleanable).map(\.id)
         }
-        let projectPaths = projectGroups.flatMap { $0.items.map(\.path) }
-        return Binding(
-            get: {
-                !(cacheIDs.isEmpty && projectPaths.isEmpty)
-                    && cacheIDs.allSatisfy(model.caches.selection.contains) && projectPaths.allSatisfy(model.selectedPlanPaths.contains)
-            },
-            set: { selected in
-                if selected {
-                    model.caches.selection.formUnion(cacheIDs)
-                    model.selectedPlanPaths.formUnion(projectPaths)
-                } else {
-                    model.caches.selection.subtract(cacheIDs)
-                    model.selectedPlanPaths.subtract(projectPaths)
-                }
-            }
-        )
+        return $model[allSelected: AppModel.SelectionGroup(cacheIDs: cacheIDs, projectPaths: projectGroups.flatMap { $0.items.map(\.path) })]
     }
 }
 
@@ -297,7 +282,7 @@ private struct CacheEntryRow: View {
     }
 
     private func binding(_ id: String) -> Binding<Bool> {
-        Binding(get: { caches.isSelected(id) }, set: { caches.setSelected(id, $0) })
+        $caches[selected: id]
     }
 }
 

@@ -66,6 +66,7 @@ struct DockerCleanupView: View {
     var onFinished: () -> Void = {}
     @State private var model: DockerCleanupModel
     @State private var pending: PendingAction?
+    @State private var isConfirming = false
 
     init(report: DockerReport, scope: Scope = .all, backupDirectory: URL = DockerVolumeBackup.defaultDirectory, onFinished: @escaping () -> Void = {}) {
         self.report = report
@@ -112,7 +113,7 @@ struct DockerCleanupView: View {
         .font(.callout)
         .confirmationDialog(
             pending?.title(report) ?? "",
-            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+            isPresented: $isConfirming,
             presenting: pending
         ) { action in
             Button(action.confirmLabel, role: .destructive) { run(action) }
@@ -134,6 +135,7 @@ struct DockerCleanupView: View {
             Text(ByteFormat.string(bytes)).monospacedDigit()
             Button {
                 pending = action
+                isConfirming = true
             } label: {
                 if model.runningAction == action.id {
                     ProgressView().controlSize(.small)

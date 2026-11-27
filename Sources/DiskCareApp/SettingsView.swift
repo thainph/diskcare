@@ -7,7 +7,6 @@ struct SettingsView: View {
     @Bindable var settings: AppSettings
     let onChange: () -> Void
     private let launchAtLogin = LaunchAtLogin.shared
-    @State private var loginError: String?
 
     var body: some View {
         Form {
@@ -42,8 +41,8 @@ struct SettingsView: View {
 
             Section(L("Background", "Chạy nền")) {
                 Stepper(L("Scan every \(settings.scanIntervalHours) hours", "Quét mỗi \(settings.scanIntervalHours) giờ"), value: $settings.scanIntervalHours, in: 1...48)
-                Toggle(L("Launch at login", "Mở cùng máy"), isOn: Binding(get: { launchAtLogin.isEnabled }, set: setLaunchAtLogin))
-                if let loginError {
+                Toggle(L("Launch at login", "Mở cùng máy"), isOn: Bindable(launchAtLogin).isOn)
+                if let loginError = launchAtLogin.lastError {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
             }
@@ -78,15 +77,6 @@ struct SettingsView: View {
         guard panel.runModal() == .OK else { return }
         for url in panel.urls where !settings.roots.contains(url.path) {
             settings.roots.append(url.path)
-        }
-    }
-
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            try launchAtLogin.set(enabled)
-            loginError = nil
-        } catch {
-            loginError = "\(error.localizedDescription)"
         }
     }
 }

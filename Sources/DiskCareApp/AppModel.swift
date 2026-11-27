@@ -36,6 +36,36 @@ final class AppModel {
     var isReviewing = false
     /// Part of the Clean up page shown (All, Projects, Caches, Docker).
     var cleanupFilter: CleanupFilter = .all
+
+    // Selection state exposed as key paths (`$model[planSelected: path]`). Closure-based
+    // `Binding(get:set:)` of Bool crashes the Swift 6.3 optimizer with the macOS 26 SDK.
+
+    subscript(planSelected path: String) -> Bool {
+        get { selectedPlanPaths.contains(path) }
+        set { if newValue { selectedPlanPaths.insert(path) } else { selectedPlanPaths.remove(path) } }
+    }
+
+    /// Several caches and projects ticked together (a tier's select-all checkbox).
+    struct SelectionGroup: Hashable {
+        var cacheIDs: [String]
+        var projectPaths: [String]
+    }
+
+    subscript(allSelected group: SelectionGroup) -> Bool {
+        get {
+            !(group.cacheIDs.isEmpty && group.projectPaths.isEmpty)
+                && group.cacheIDs.allSatisfy(caches.selection.contains) && group.projectPaths.allSatisfy(selectedPlanPaths.contains)
+        }
+        set {
+            if newValue {
+                caches.selection.formUnion(group.cacheIDs)
+                selectedPlanPaths.formUnion(group.projectPaths)
+            } else {
+                caches.selection.subtract(group.cacheIDs)
+                selectedPlanPaths.subtract(group.projectPaths)
+            }
+        }
+    }
     var selectedSection: MainSection? = .overview
 
     private var scheduler: NSBackgroundActivityScheduler?

@@ -13,6 +13,12 @@ final class DoctorModel {
     /// Fix awaiting confirmation.
     var pendingChange: (checkID: String, change: ConfigChange)?
 
+    /// Drives the confirmation dialog through a key path (see `AppModel` on closure bindings).
+    var isConfirmingFix: Bool {
+        get { pendingChange != nil }
+        set { if !newValue { pendingChange = nil } }
+    }
+
     private var lastReportDate: Date?
 
     func run(report: ScanReport?, caches: CacheReport? = nil) {
@@ -118,7 +124,7 @@ struct DoctorView: View {
         .confirmationDialog(
             L("Edit \(model.pendingChange?.change.path.abbreviatingHome ?? "config")?",
               "Sửa \(model.pendingChange?.change.path.abbreviatingHome ?? "cấu hình")?"),
-            isPresented: Binding(get: { model.pendingChange != nil }, set: { if !$0 { model.pendingChange = nil } })
+            isPresented: Bindable(model).isConfirmingFix
         ) {
             Button(L("Write config", "Ghi cấu hình")) { model.applyPendingFix(report: report) }
         } message: {

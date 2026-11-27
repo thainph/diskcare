@@ -68,12 +68,7 @@ struct PlanGroupView: View {
     }
 
     private func binding(_ path: String) -> Binding<Bool> {
-        Binding(
-            get: { model.selectedPlanPaths.contains(path) },
-            set: { selected in
-                if selected { model.selectedPlanPaths.insert(path) } else { model.selectedPlanPaths.remove(path) }
-            }
-        )
+        $model[planSelected: path]
     }
 }
 

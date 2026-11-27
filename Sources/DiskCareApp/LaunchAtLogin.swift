@@ -33,6 +33,22 @@ final class LaunchAtLogin {
         }
     }
 
+    /// Why the last change failed, shown under the toggle.
+    private(set) var lastError: String?
+
+    /// For a `Toggle`: `Bindable(LaunchAtLogin.shared).isOn`.
+    var isOn: Bool {
+        get { isEnabled }
+        set {
+            do {
+                try set(newValue)
+                lastError = nil
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
     func openSystemSettings() {
         SMAppService.openSystemSettingsLoginItems()
     }

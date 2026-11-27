@@ -74,6 +74,12 @@ final class CachesModel {
 
     func isSelected(_ id: String) -> Bool { selection.contains(id) }
 
+    /// `$caches[selected: id]` for checkboxes.
+    subscript(selected id: String) -> Bool {
+        get { selection.contains(id) }
+        set { setSelected(id, newValue) }
+    }
+
     func setSelected(_ id: String, _ selected: Bool) {
         if selected { selection.insert(id) } else { selection.remove(id) }
     }
