@@ -3,29 +3,41 @@ import DiskCareCore
 import SwiftUI
 
 enum MainSection: String, CaseIterable, Identifiable {
-    case overview, projects, caches, docker, growth, doctor
+    case overview, cleanup, insights, prevention
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .overview: "Overview"
-        case .projects: "Projects"
-        case .caches: "Caches"
-        case .docker: "Docker"
-        case .growth: "Growth"
-        case .doctor: "Prevention"
+        case .overview: L("Overview", "Tổng quan")
+        case .cleanup: L("Clean up", "Dọn dẹp")
+        case .insights: L("Insights", "Phân tích")
+        case .prevention: L("Prevention", "Phòng ngừa")
         }
     }
 
     var systemImage: String {
         switch self {
         case .overview: "gauge.with.dots.needle.33percent"
-        case .projects: "folder"
-        case .caches: "archivebox"
-        case .docker: "shippingbox"
-        case .growth: "chart.line.uptrend.xyaxis"
-        case .doctor: "stethoscope"
+        case .cleanup: "sparkles"
+        case .insights: "chart.line.uptrend.xyaxis"
+        case .prevention: "checkmark.shield"
+        }
+    }
+}
+
+/// Which part of the Clean up page is shown.
+enum CleanupFilter: String, CaseIterable, Identifiable {
+    case all, projects, caches, docker
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: L("All", "Tất cả")
+        case .projects: L("Projects", "Dự án")
+        case .caches: L("Caches", "Cache")
+        case .docker: "Docker"
         }
     }
 }
@@ -34,71 +46,100 @@ struct MainWindow: View {
     static let windowID = "main"
 
     @Bindable var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selectedSection) {
-                Label(MainSection.overview.title, systemImage: MainSection.overview.systemImage)
-                    .tag(MainSection.overview)
-                Section("Free up space") {
-                    ForEach(SpaceSource.allCases) { source in
-                        sidebarRow(source.section, bytes: bytes(for: source))
-                    }
-                }
-                Section("Keep it clean") {
-                    Label(MainSection.growth.title, systemImage: MainSection.growth.systemImage)
-                        .badge(model.growth.liveAlerts.count)
-                        .tag(MainSection.growth)
-                    Label(MainSection.doctor.title, systemImage: MainSection.doctor.systemImage)
-                        .tag(MainSection.doctor)
+                ForEach(MainSection.allCases) { section in
+                    sidebarRow(section).tag(section)
                 }
             }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+            .safeAreaInset(edge: .bottom) { MonitoringStatus(model: model).padding(10) }
         } detail: {
             detail(model.selectedSection ?? .overview)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle("DiskCare")
+                .navigationTitle((model.selectedSection ?? .overview).title)
                 .toolbar {
                     ToolbarItemGroup {
                         if let status = model.scanStatus {
                             Text("\(status.title) (\(status.step)/\(status.totalSteps))")
                                 .font(.caption).foregroundStyle(.secondary)
                             ProgressView().controlSize(.small)
+                        } else {
+                            Text(model.lastScanText).font(.caption).foregroundStyle(.secondary)
                         }
                         Button {
                             model.scan()
                         } label: {
-                            Label("Scan now", systemImage: "arrow.clockwise")
+                            Label(L("Scan now", "Quét ngay"), systemImage: "arrow.clockwise")
                         }
-                        .help("Scan projects, caches and Docker again")
+                        .help(L("Scan projects, caches and Docker again", "Quét lại dự án, cache và Docker"))
                         .disabled(model.isScanning || model.isCleaning)
+                        Button {
+                            openWindow(id: SettingsView.windowID)
+                        } label: {
+                            Label(L("Settings", "Cài đặt"), systemImage: "gearshape")
+                        }
+                        .help(L("Settings", "Cài đặt"))
                     }
                 }
         }
-        .frame(minWidth: 860, minHeight: 600)
+        .frame(minWidth: 900, minHeight: 620)
+        .containerBackground(.thinMaterial, for: .window)
+        .sheet(isPresented: $model.isReviewing) { ReviewSheet(model: model) }
+        .id(model.settings.language)
     }
 
-    private func sidebarRow(_ section: MainSection, bytes: Int64) -> some View {
-        Label(section.title, systemImage: section.systemImage)
-            .badge(bytes > 0 ? Text(ByteFormat.string(bytes)).monospacedDigit() : nil)
-            .tag(section)
-    }
-
-    private func bytes(for source: SpaceSource) -> Int64 {
-        model.reclaimable.first { $0.0 == source }?.1 ?? 0
+    @ViewBuilder
+    private func sidebarRow(_ section: MainSection) -> some View {
+        let label = Label(section.title, systemImage: section.systemImage)
+        switch section {
+        case .cleanup where model.safeCleanBytes > 0:
+            label.badge(Text(ByteFormat.string(model.safeCleanBytes)).monospacedDigit())
+        case .insights where !model.growth.liveAlerts.isEmpty:
+            label.badge(model.growth.liveAlerts.count)
+        default:
+            label
+        }
     }
 
     @ViewBuilder
     private func detail(_ section: MainSection) -> some View {
         switch section {
         case .overview: OverviewView(model: model)
-        case .projects: ProjectsView(model: model)
-        case .caches: CachesPage(model: model)
-        case .docker: DockerPage(model: model)
-        case .growth: GrowthPage(model: model)
-        case .doctor: DoctorPage(model: model)
+        case .cleanup: CleanupPage(model: model)
+        case .insights: InsightsPage(model: model)
+        case .prevention: DoctorPage(model: model)
         }
     }
+}
+
+/// Sidebar footer: is DiskCare actually watching the disk?
+struct MonitoringStatus: View {
+    let model: AppModel
+    private let launchAtLogin = LaunchAtLogin.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Circle().fill(isOn ? Color.green : Color.orange).frame(width: 8, height: 8)
+                Text(isOn ? L("Monitoring on", "Đang theo dõi") : L("Monitoring paused", "Chưa theo dõi liên tục"))
+                    .font(.callout.weight(.semibold))
+            }
+            Text(isOn
+                 ? L("Checks free space every 15 min. Launch at login is on.", "Kiểm tra dung lượng mỗi 15 phút. Đã bật mở cùng máy.")
+                 : L("Turn on Launch at login so DiskCare keeps watching.", "Bật mở cùng máy để DiskCare theo dõi liên tục."))
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentSurface(cornerRadius: 14)
+    }
+
+    private var isOn: Bool { !launchAtLogin.needsAttention }
 }
 
 /// Shared page scaffold: scrollable, consistent padding and spacing.
@@ -107,9 +148,9 @@ struct Page<Content: View>: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16, content: content)
-                .padding(24)
-                .frame(maxWidth: 980, alignment: .leading)
+            VStack(alignment: .leading, spacing: 18, content: content)
+                .padding(Metrics.pagePadding)
+                .frame(maxWidth: 1080, alignment: .leading)
         }
     }
 }
@@ -140,7 +181,7 @@ struct OverviewView: View {
             if !model.growth.liveAlerts.isEmpty || (model.growth.report?.alerts.isEmpty == false) {
                 Card(title: "Growing fast", systemImage: "chart.line.uptrend.xyaxis") {
                     GrowthView(model: model.growth, maxRows: 3, showsHeader: false)
-                    Button("See growth details") { model.selectedSection = .growth }.buttonStyle(.link)
+                    Button("See growth details") { model.selectedSection = .insights }.buttonStyle(.link)
                 }
             }
         }

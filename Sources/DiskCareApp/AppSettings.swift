@@ -36,6 +36,10 @@ final class AppSettings {
     var scanIntervalHours: Int {
         didSet { defaults.set(scanIntervalHours, forKey: Keys.scanIntervalHours) }
     }
+    /// Interface language (English / Tiếng Việt / follow macOS).
+    var language: AppLanguage {
+        didSet { defaults.set(language.rawValue, forKey: AppLanguage.defaultsKey) }
+    }
     /// The first-run welcome screen was completed (shown once).
     var hasCompletedWelcome: Bool {
         didSet { defaults.set(hasCompletedWelcome, forKey: Keys.hasCompletedWelcome) }
@@ -64,6 +68,7 @@ final class AppSettings {
         criticalSpacePercent = defaults.integer(forKey: Keys.criticalSpacePercent)
         scanIntervalHours = defaults.integer(forKey: Keys.scanIntervalHours)
         hasCompletedWelcome = defaults.bool(forKey: Keys.hasCompletedWelcome)
+        language = defaults.string(forKey: AppLanguage.defaultsKey).flatMap(AppLanguage.init(rawValue:)) ?? .system
     }
 
     var criteria: CleanupCriteria {

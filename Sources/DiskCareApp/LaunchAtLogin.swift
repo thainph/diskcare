@@ -55,19 +55,21 @@ struct LaunchAtLoginBanner: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     Text(launchAtLogin.requiresApproval
-                        ? "Launch at login needs your approval in System Settings › Login Items."
-                        : "Launch at login is off: after a restart DiskCare stops checking free space.")
+                        ? L("Launch at login needs your approval in System Settings › Login Items.",
+                            "Mở cùng máy cần bạn cho phép trong Cài đặt hệ thống › Mục đăng nhập.")
+                        : L("Launch at login is off: after a restart DiskCare stops checking free space.",
+                            "Chưa bật mở cùng máy: sau khi khởi động lại, DiskCare sẽ không kiểm tra dung lượng nữa."))
                         .font(.callout).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button(launchAtLogin.requiresApproval ? "Open Settings" : "Turn On", action: fix)
+                    Button(launchAtLogin.requiresApproval ? L("Open Settings", "Mở Cài đặt") : L("Turn On", "Bật"), action: fix)
                         .controlSize(.small)
                 }
                 if let errorMessage {
                     Text(errorMessage).font(.caption).foregroundStyle(.red)
                 }
             }
-            .padding(10)
-            .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            .padding(12)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
     }
 

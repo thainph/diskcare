@@ -10,8 +10,8 @@ enum SpaceSource: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .projects: "Project build files"
-        case .caches: "Developer caches"
+        case .projects: L("Project build files", "File build của dự án")
+        case .caches: L("Developer caches", "Cache cho lập trình")
         case .docker: "Docker"
         }
     }
@@ -19,9 +19,12 @@ enum SpaceSource: String, CaseIterable, Identifiable {
     /// Plain-language explanation shown under the title.
     var explanation: String {
         switch self {
-        case .projects: "node_modules, .terraform, build output of projects you haven't touched recently"
-        case .caches: "Package manager, browser and Xcode caches that tools re-download when needed"
-        case .docker: "Unused images, build cache and stopped containers (volumes with data are listed separately)"
+        case .projects: L("node_modules, .terraform, build output of projects you haven't touched recently",
+                          "node_modules, .terraform, output build của dự án lâu không đụng tới")
+        case .caches: L("Package manager, browser and Xcode caches that tools re-download when needed",
+                        "Cache của trình quản lý gói, trình duyệt và Xcode, công cụ tự tải lại khi cần")
+        case .docker: L("Unused images, build cache and stopped containers (volumes with data are listed separately)",
+                        "Image không dùng, build cache và container đã dừng (volume có dữ liệu được liệt kê riêng)")
         }
     }
 
@@ -41,7 +44,9 @@ enum SpaceSource: String, CaseIterable, Identifiable {
         }
     }
 
-    var section: MainSection {
+    var section: MainSection { .cleanup }
+
+    var filter: CleanupFilter {
         switch self {
         case .projects: .projects
         case .caches: .caches
@@ -86,13 +91,15 @@ extension PageHeader where Actions == EmptyView {
 }
 
 /// Card container with an optional title, used for every content block in the main window.
+/// Content sits on a mostly opaque layer so text keeps its contrast over the translucent window;
+/// controls that float above content (sidebar, toolbar, action bar) use real Liquid Glass.
 struct Card<Content: View>: View {
     var title: String?
     var systemImage: String?
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if let title {
                 Label {
                     Text(title).font(.headline)
@@ -102,10 +109,151 @@ struct Card<Content: View>: View {
             }
             content()
         }
-        .padding(14)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(nsColor: .separatorColor)))
+        .contentSurface(cornerRadius: Metrics.cardRadius)
+    }
+}
+
+enum Metrics {
+    static let cardRadius: CGFloat = 18
+    static let pagePadding: CGFloat = 24
+}
+
+extension View {
+    /// Solid-enough surface for readable content (cards, lists).
+    func contentSurface(cornerRadius: CGFloat = Metrics.cardRadius) -> some View {
+        background(.background.opacity(0.78), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+    }
+
+    /// Liquid Glass on macOS 26, a thin material before it: for controls floating above content.
+    @ViewBuilder
+    func glassSurface(cornerRadius: CGFloat = 22, interactive: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(interactive ? .regular.interactive() : .regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.12), radius: 14, y: 6)
+        }
+    }
+
+    /// The page's main action: prominent glass button on macOS 26.
+    @ViewBuilder
+    func primaryActionStyle() -> some View {
+        if #available(macOS 26.0, *) {
+            buttonStyle(.glassProminent)
+        } else {
+            buttonStyle(.borderedProminent)
+        }
+    }
+
+    @ViewBuilder
+    func secondaryActionStyle() -> some View {
+        if #available(macOS 26.0, *) {
+            buttonStyle(.glass)
+        } else {
+            buttonStyle(.bordered)
+        }
+    }
+}
+
+/// How safe it is to clean something; drives grouping, preselection and confirmation everywhere.
+enum SafetyTier: Int, CaseIterable, Identifiable {
+    /// Re-created automatically (pure caches): preselected.
+    case safe
+    /// Needs a re-download or rebuild: picked by hand, confirmed once.
+    case rebuild
+    /// Never cleaned by DiskCare.
+    case reportOnly
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .safe: L("Safe", "An toàn")
+        case .rebuild: L("Needs re-download or rebuild", "Cần tải lại hoặc build lại")
+        case .reportOnly: L("Report only", "Chỉ xem")
+        }
+    }
+
+    var badge: String {
+        switch self {
+        case .safe: L("Re-created automatically", "Tự tạo lại")
+        case .rebuild: L("Pick by hand", "Chọn thủ công")
+        case .reportOnly: L("Never cleaned by DiskCare", "DiskCare không bao giờ xoá")
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .safe: .green
+        case .rebuild: .orange
+        case .reportOnly: .secondary
+        }
+    }
+}
+
+/// Disk state in words and color (color never alone).
+struct StatusPill: View {
+    let level: SpaceLevel
+
+    var body: some View {
+        Text(title)
+            .font(.callout.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .foregroundStyle(color)
+            .background(color.opacity(0.15), in: Capsule())
+    }
+
+    private var title: String {
+        switch level {
+        case .ok: L("Healthy", "Ổn định")
+        case .low: L("Low on space", "Sắp đầy")
+        case .critical: L("Critically low", "Gần hết chỗ")
+        }
+    }
+
+    var color: Color {
+        switch level {
+        case .ok: .green
+        case .low: .orange
+        case .critical: .red
+        }
+    }
+}
+
+/// Ring showing the free share of the disk.
+struct RingGauge: View {
+    let freeBytes: Int64
+    let totalBytes: Int64
+    let level: SpaceLevel
+    var size: CGFloat = 132
+    var lineWidth: CGFloat = 14
+    var showsLabel = true
+
+    var body: some View {
+        let fraction = totalBytes > 0 ? Double(freeBytes) / Double(totalBytes) : 0
+        ZStack {
+            Circle().stroke(.quaternary, lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(StatusPill(level: level).color.gradient, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            if showsLabel {
+                VStack(spacing: 0) {
+                    Text(fraction.formatted(.percent.precision(.fractionLength(0))))
+                        .font(.system(size: size * 0.18, weight: .bold, design: .rounded))
+                    Text(L("free", "trống")).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityElement()
+        .accessibilityLabel(L("\(ByteFormat.string(freeBytes)) free of \(ByteFormat.string(totalBytes))",
+                              "Còn trống \(ByteFormat.string(freeBytes)) trên \(ByteFormat.string(totalBytes))"))
     }
 }
 
@@ -143,7 +291,7 @@ struct StatusBanner: View {
             if let onDismiss {
                 Button(action: onDismiss) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless)
-                    .help("Dismiss")
+                    .help(L("Dismiss", "Đóng"))
             }
         }
         .padding(10)
@@ -178,11 +326,11 @@ struct DiskUsageBar: View {
 
             if showsLegend {
                 HStack(spacing: 14) {
-                    legend(Color.secondary.opacity(0.45), "Other used", otherUsed)
+                    legend(Color.secondary.opacity(0.45), L("Other used", "Đã dùng khác"), otherUsed)
                     ForEach(reclaimable, id: \.0) { source, bytes in
                         legend(source.color, source.title, bytes)
                     }
-                    legend(Color.secondary.opacity(0.2), "Free", freeBytes)
+                    legend(Color.secondary.opacity(0.2), L("Free", "Trống"), freeBytes)
                 }
                 .font(.caption)
             }
@@ -209,12 +357,12 @@ struct DiskUsageBar: View {
 
 /// Human wording for "days since last activity".
 func idleText(_ days: Int?) -> String {
-    guard let days else { return "never used" }
+    guard let days else { return L("never used", "chưa dùng") }
     switch days {
-    case 0: return "active today"
-    case 1: return "unused 1 day"
-    case 2..<60: return "unused \(days) days"
-    default: return "unused \(days / 30) months"
+    case 0: return L("active today", "dùng hôm nay")
+    case 1: return L("unused 1 day", "1 ngày không dùng")
+    case 2..<60: return L("unused \(days) days", "\(days) ngày không dùng")
+    default: return L("unused \(days / 30) months", "\(days / 30) tháng không dùng")
     }
 }
 

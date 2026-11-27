@@ -31,8 +31,11 @@ final class AppModel {
     private(set) var isScanning = false
     private(set) var isCleaning = false
     private(set) var lastCleanupMessage: String?
-    /// Plan items the user unchecked; kept across rescans by path.
-    var deselected: Set<String> = []
+    /// Project plan items the user ticked; kept across rescans by path. Rebuilding is never
+    /// preselected: the user picks projects by hand.
+    var selectedPlanPaths: Set<String> = []
+    /// The review sheet (one confirmation for everything selected) is open.
+    var isReviewing = false
     var selectedSection: MainSection? = .overview
 
     private var scheduler: NSBackgroundActivityScheduler?
@@ -117,7 +120,7 @@ final class AppModel {
     }
 
     var selectedPlan: [CleanupCandidate] {
-        plan.filter { !deselected.contains($0.path) }
+        plan.filter { selectedPlanPaths.contains($0.path) }
     }
 
     var planBytes: Int64 { plan.reduce(0) { $0 + $1.bytes } }
@@ -148,9 +151,27 @@ final class AppModel {
         }
     }
 
-    func selectAllPlan() { deselected.removeAll() }
+    func selectAllPlan() { selectedPlanPaths = Set(plan.map(\.path)) }
 
-    func selectNoPlan() { deselected = Set(plan.map(\.path)) }
+    func selectNoPlan() { selectedPlanPaths.removeAll() }
+
+    /// What "Clean safely" cleans: caches re-created automatically.
+    var safeCleanBytes: Int64 { caches.report?.safeReclaimableBytes ?? 0 }
+
+    /// One-click path from the Overview and the menu: pick only safe caches, then review.
+    func reviewSafeClean() {
+        selectNoPlan()
+        caches.selectAllSafe()
+        selectedSection = .cleanup
+        isReviewing = true
+    }
+
+    /// Selected projects and caches: one review, one confirmation, one run.
+    var selectionBytes: Int64 {
+        selectedPlan.reduce(0) { $0 + $1.bytes } + caches.selectedBytes
+    }
+
+    var selectionCount: Int { selectedPlan.count + caches.selectedTargets.count }
 
     func dismissCleanupMessage() { lastCleanupMessage = nil }
 
@@ -177,17 +198,21 @@ final class AppModel {
         guard let space, let threshold = lowSpaceThresholdBytes else { return nil }
         switch spaceLevel {
         case .ok: return nil
-        case .low: return "Free space is below your \(ByteFormat.string(threshold)) warning level."
+        case .low: return L("Free space is below your \(ByteFormat.string(threshold)) warning level.",
+                            "Dung lượng trống đã dưới ngưỡng cảnh báo \(ByteFormat.string(threshold)).")
         case .critical:
             let critical = settings.spaceThresholds.criticalBytes(total: space.totalBytes)
-            return "Free space is critically low (below \(ByteFormat.string(critical)))."
+            return L("Free space is critically low (below \(ByteFormat.string(critical))).",
+                     "Dung lượng trống rất thấp (dưới \(ByteFormat.string(critical))).")
         }
     }
 
     /// "Full in ~9 days" when the trend predicts a full disk within two weeks.
     var forecastText: String? {
         guard let days = forecast?.daysUntilFull, days < 14 else { return nil }
-        return days < 1 ? "At the current rate the disk fills up within a day" : "At the current rate the disk is full in ~\(Int(days.rounded())) days"
+        return days < 1
+            ? L("At the current rate the disk fills up within a day", "Với tốc độ hiện tại, ổ sẽ đầy trong vòng một ngày")
+            : L("At the current rate the disk is full in ~\(Int(days.rounded())) days", "Với tốc độ hiện tại, ổ sẽ đầy sau ~\(Int(days.rounded())) ngày")
     }
 
     var scanStaleness: ScanStaleness {
@@ -196,8 +221,11 @@ final class AppModel {
 
     /// "Last full scan: 3 days ago".
     var lastScanText: String {
-        guard let lastScanAt else { return "No full scan yet" }
-        return "Last full scan: \(ScanFreshness.ageText(lastScan: lastScanAt))"
+        guard let lastScanAt else { return L("No full scan yet", "Chưa quét lần nào") }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = AppLanguage.resolved.locale
+        let age = formatter.localizedString(for: lastScanAt, relativeTo: Date())
+        return L("Last full scan \(age)", "Quét gần nhất \(age)")
     }
 
     var menuTitle: String {
@@ -247,7 +275,7 @@ final class AppModel {
 
         var fresh: [ScanReport] = []
         for (index, root) in roots.enumerated() {
-            scanStatus = ScanStatus(step: index + 1, totalSteps: totalSteps, title: "Scanning \(root.abbreviatingHome)")
+            scanStatus = ScanStatus(step: index + 1, totalSteps: totalSteps, title: L("Scanning \(root.abbreviatingHome)", "Đang quét \(root.abbreviatingHome)"))
             progress.reset()
             let rootReport = await DiskAnalyzer.analyze(ScanOptions(roots: [root], priority: priority, progress: progress))
             fresh.append(rootReport)
@@ -255,7 +283,7 @@ final class AppModel {
         }
         if let combined = ScanReport.combining(fresh) { report = combined }
 
-        scanStatus = ScanStatus(step: roots.count + 1, totalSteps: totalSteps, title: "Checking Docker")
+        scanStatus = ScanStatus(step: roots.count + 1, totalSteps: totalSteps, title: L("Checking Docker", "Đang kiểm tra Docker"))
         let dockerReport = await DockerScanner.scan()
         self.dockerReport = dockerReport
         lastScanAt = Date()
@@ -266,7 +294,7 @@ final class AppModel {
         }
         evaluateSpaceAlerts()
 
-        scanStatus = ScanStatus(step: roots.count + 2, totalSteps: totalSteps, title: "Measuring developer caches")
+        scanStatus = ScanStatus(step: roots.count + 2, totalSteps: totalSteps, title: L("Measuring developer caches", "Đang đo cache"))
         progress.reset()
         await caches.refresh(priority: priority, progress: progress)
         saveSnapshot()
@@ -386,31 +414,33 @@ final class AppModel {
 
     // MARK: Cleaning
 
-    func cleanSelected() {
-        let items = selectedPlan
-        guard !items.isEmpty, !isCleaning else { return }
+    /// Cleans the reviewed projects and caches, then rescans. Projects and caches run one after the
+    /// other so the free-space delta and the message cover both.
+    func cleanReviewed(projects: [CleanupCandidate], caches targets: [CacheCleanTarget]) {
+        guard !isCleaning, !(projects.isEmpty && targets.isEmpty) else { return }
         isCleaning = true
         lastCleanupMessage = nil
         let roots = report?.roots ?? settings.roots.map(ScanOptions.normalize)
         let mode: CleanupMode = settings.moveToTrash ? .trash : .delete
         let before = freeBytes
         Task {
-            let outcomes = await Task.detached(priority: .userInitiated) {
-                Cleaner.execute(items, roots: roots, mode: mode)
+            let (outcomes, cacheResult) = await Task.detached(priority: .userInitiated) {
+                (Cleaner.execute(projects, roots: roots, mode: mode), CacheCleaner.clean(targets, mode: mode))
             }.value
             refreshFreeSpace()
-            let failed = outcomes.filter { !$0.succeeded }
-            var message = "Cleaned \(outcomes.count - failed.count)/\(outcomes.count) items"
+            let failures = outcomes.filter { !$0.succeeded }.map { (URL(fileURLWithPath: $0.candidate.path).lastPathComponent, $0.error ?? "error") }
+                + cacheResult.outcomes.filter { !$0.succeeded }.map { ($0.target.title, $0.error ?? "error") }
+            let total = outcomes.count + cacheResult.outcomes.count
+            var message = L("Cleaned \(total - failures.count) of \(total)", "Đã dọn \(total - failures.count)/\(total) mục")
             if let before, let after = freeBytes, after > before {
-                message += ", +\(ByteFormat.string(after - before)) free"
+                message += L(", +\(ByteFormat.string(after - before)) free", ", trống thêm \(ByteFormat.string(after - before))")
             }
-            if mode == .trash { message += " (empty Trash to reclaim)" }
-            if let first = failed.first {
-                message += ". Failed: \(URL(fileURLWithPath: first.candidate.path).lastPathComponent) – \(first.error ?? "error")"
-            }
+            if mode == .trash { message += L(" (empty the Trash to reclaim)", " (dọn Thùng rác để lấy lại chỗ)") }
+            if let first = failures.first { message += L(". Failed: \(first.0) – \(first.1)", ". Lỗi: \(first.0) – \(first.1)") }
             lastCleanupMessage = message
             isCleaning = false
-            deselected.removeAll()
+            selectedPlanPaths.removeAll()
+            caches.selection.removeAll()
             scan(priority: .background)
         }
     }

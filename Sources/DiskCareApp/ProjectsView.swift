@@ -52,7 +52,7 @@ struct ProjectsView: View {
             .padding(24)
         }
         .confirmationDialog(confirmTitle, isPresented: $confirmingClean) {
-            Button(model.settings.moveToTrash ? "Move to Trash" : "Delete", role: .destructive) { model.cleanSelected() }
+            Button(model.settings.moveToTrash ? "Move to Trash" : "Delete", role: .destructive) { model.cleanReviewed(projects: model.selectedPlan, caches: []) }
         } message: {
             Text("Projects stay intact; only regenerable folders are removed (reinstall with npm/pnpm install, terraform init, cargo build…). Worktrees are removed with `git worktree remove` and their branches are kept.")
         }
@@ -169,9 +169,9 @@ private struct PlanGroupView: View {
 
     private func binding(_ path: String) -> Binding<Bool> {
         Binding(
-            get: { !model.deselected.contains(path) },
+            get: { model.selectedPlanPaths.contains(path) },
             set: { selected in
-                if selected { model.deselected.remove(path) } else { model.deselected.insert(path) }
+                if selected { model.selectedPlanPaths.insert(path) } else { model.selectedPlanPaths.remove(path) }
             }
         )
     }

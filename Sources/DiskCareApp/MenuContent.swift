@@ -97,7 +97,7 @@ struct MenuContent: View {
     private var growthAlert: some View {
         if let alert = model.growth.liveAlerts.first {
             Button {
-                openMain(.growth)
+                openMain(.insights)
             } label: {
                 StatusBanner(message: alert.alert.message, isError: true)
             }
