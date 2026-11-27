@@ -25,10 +25,17 @@ public struct CacheItem: Sendable, Codable, Identifiable {
     /// output the user cannot rebuild; recommended alone is not enough.
     public let isPreselectable: Bool
     public let reason: String?
+    /// Why the item cannot be cleaned at all (in use, holds data Cargo does not create…).
+    public let blockedReason: String?
+    /// A lock file the owning tool holds while writing here; held by DiskCare while moving the item away.
+    public let lockFile: String?
+
+    public var isCleanable: Bool { blockedReason == nil }
 
     public init(
         id: String, entryID: String, name: String, path: String, bytes: Int64, hardlinkedBytes: Int64,
-        lastUsedAt: Date?, isRecommended: Bool, isPreselectable: Bool = false, reason: String?
+        lastUsedAt: Date?, isRecommended: Bool, isPreselectable: Bool = false, reason: String?,
+        blockedReason: String? = nil, lockFile: String? = nil
     ) {
         self.id = id
         self.entryID = entryID
@@ -37,13 +44,15 @@ public struct CacheItem: Sendable, Codable, Identifiable {
         self.bytes = bytes
         self.hardlinkedBytes = hardlinkedBytes
         self.lastUsedAt = lastUsedAt
-        self.isRecommended = isRecommended
-        self.isPreselectable = isPreselectable && isRecommended
+        self.isRecommended = isRecommended && blockedReason == nil
+        self.isPreselectable = isPreselectable && self.isRecommended
         self.reason = reason
+        self.blockedReason = blockedReason
+        self.lockFile = lockFile
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, entryID, name, path, bytes, hardlinkedBytes, lastUsedAt, isRecommended, isPreselectable, reason
+        case id, entryID, name, path, bytes, hardlinkedBytes, lastUsedAt, isRecommended, isPreselectable, reason, blockedReason, lockFile
     }
 
     /// Reports saved by older versions have no `isPreselectable`: treat it as false.
@@ -59,7 +68,9 @@ public struct CacheItem: Sendable, Codable, Identifiable {
             lastUsedAt: try container.decodeIfPresent(Date.self, forKey: .lastUsedAt),
             isRecommended: try container.decode(Bool.self, forKey: .isRecommended),
             isPreselectable: try container.decodeIfPresent(Bool.self, forKey: .isPreselectable) ?? false,
-            reason: try container.decodeIfPresent(String.self, forKey: .reason)
+            reason: try container.decodeIfPresent(String.self, forKey: .reason),
+            blockedReason: try container.decodeIfPresent(String.self, forKey: .blockedReason),
+            lockFile: try container.decodeIfPresent(String.self, forKey: .lockFile)
         )
     }
 

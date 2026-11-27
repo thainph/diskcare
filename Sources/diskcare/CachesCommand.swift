@@ -19,8 +19,11 @@ struct CachesList: ParsableCommand {
     @Flag(name: .long, help: "Print the report as JSON.")
     var json = false
 
+    @Option(name: .long, help: "Project root whose .cargo/config.toml (and its parents') may set a shared build dir. Repeatable.")
+    var root: [String] = []
+
     func run() throws {
-        let report = CacheScanner.scan()
+        let report = CacheScanner.scan(CacheScanner.Options(definitions: CacheCatalog.definitions(scanRoots: root.map(ScanOptions.normalize))))
         if json {
             try printJSON(report)
             return
@@ -38,7 +41,7 @@ struct CachesList: ParsableCommand {
             for item in shown {
                 rows.append([
                     "  " + item.id, "  ↳ " + (item.reason ?? ""),
-                    ByteFormat.string(item.bytes), item.isRecommended ? "suggested" : "",
+                    ByteFormat.string(item.bytes), item.blockedReason.map { "blocked: \($0)" } ?? (item.isRecommended ? "suggested" : ""),
                     lastUsed(item.lastUsedAt), "delete dir",
                 ])
             }
@@ -89,13 +92,17 @@ struct CachesClean: ParsableCommand {
     @Flag(name: .long, help: "Print the plan (and outcomes) as JSON.")
     var json = false
 
+    @Option(name: .long, help: "Project root whose .cargo/config.toml (and its parents') may set a shared build dir. Repeatable.")
+    var root: [String] = []
+
     func validate() throws {
         if ids.isEmpty && !allSafe { throw ValidationError("Pass cache ids or --all-safe.") }
     }
 
     func run() throws {
         let resolver = CommandResolver.standard()
-        let report = CacheScanner.scan(CacheScanner.Options(resolver: resolver))
+        let definitions = CacheCatalog.definitions(scanRoots: root.map(ScanOptions.normalize))
+        let report = CacheScanner.scan(CacheScanner.Options(definitions: definitions, resolver: resolver))
         let targets: [CacheCleanTarget]
         do {
             targets = try CacheCleaner.targets(ids: (allSafe ? report.allSafeIDs : []) + ids, in: report)

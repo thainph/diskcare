@@ -18,6 +18,8 @@ public struct CacheCleanTarget: Sendable, Codable, Identifiable {
     public let bytes: Int64
     public let nativeCommand: NativeCleanCommand?
     public let fallback: CacheFallback
+    /// Lock held (flock) while an item is moved aside, so a concurrent build is never cut in half.
+    public var lockFile: String? = nil
 
     /// Human-readable plan for this target in the given mode.
     public func action(mode: CleanupMode, resolver: CommandResolver) -> String {
@@ -56,9 +58,11 @@ public enum CacheCleanError: Error, CustomStringConvertible {
     case unknownID(String)
     case userData(String)
     case notCleanable(String)
+    case blocked(String, String)
 
     public var description: String {
         switch self {
+        case .blocked(let id, let reason): "\(id) cannot be cleaned: \(reason)"
         case .unknownID(let id): "unknown cache id: \(id)"
         case .userData(let id): "\(id) holds user data and is never cleaned by DiskCare"
         case .notCleanable(let id): "\(id) cannot be cleaned (no cleanup command available)"
@@ -83,9 +87,10 @@ public enum CacheCleaner {
                 ))
             } else if let item = report.item(id: id), let entry = report.entry(id: item.entryID) {
                 guard entry.safety.isCleanable else { throw CacheCleanError.userData(id) }
+                if let reason = item.blockedReason { throw CacheCleanError.blocked(id, reason) }
                 targets.append(CacheCleanTarget(
                     id: item.id, kind: .item, title: "\(entry.title): \(item.name)", safety: entry.safety, paths: [item.path],
-                    containers: entry.paths, bytes: item.bytes, nativeCommand: nil, fallback: .deleteContents
+                    containers: entry.paths, bytes: item.bytes, nativeCommand: nil, fallback: .deleteContents, lockFile: item.lockFile
                 ))
             } else {
                 throw CacheCleanError.unknownID(id)
@@ -164,7 +169,9 @@ public enum CacheCleaner {
                 return outcome("skipped", error: problem)
             }
             do {
-                if mode == .trash {
+                if let lockFile = target.lockFile {
+                    try Cleaner.removeTree(path, mode: mode, expected: verdict.identity, holdingLock: lockFile)
+                } else if mode == .trash {
                     try Cleaner.trash(path, expected: verdict.identity)
                 } else if Cleaner.isStagingName((path as NSString).lastPathComponent) {
                     try Cleaner.verify(path, expected: verdict.identity)

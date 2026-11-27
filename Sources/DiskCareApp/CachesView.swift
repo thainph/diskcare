@@ -16,10 +16,21 @@ final class CachesModel {
 
     /// Read at clean time so it follows the app's "Move to Trash" setting.
     private let moveToTrash: @MainActor () -> Bool
+    /// Project roots, whose `.cargo/config.toml` files may point at shared build dirs.
+    private let scanRoots: @MainActor () -> [String]
+    /// `.terraform` dirs of the last project scan (nil before one): which provider versions are used.
+    private let terraformDirs: @MainActor () -> [String]?
     private let onCleaned: (@MainActor (CacheCleanResult) -> Void)?
 
-    init(moveToTrash: @escaping @MainActor () -> Bool = { false }, onCleaned: (@MainActor (CacheCleanResult) -> Void)? = nil) {
+    init(
+        moveToTrash: @escaping @MainActor () -> Bool = { false },
+        scanRoots: @escaping @MainActor () -> [String] = { [] },
+        terraformDirs: @escaping @MainActor () -> [String]? = { nil },
+        onCleaned: (@MainActor (CacheCleanResult) -> Void)? = nil
+    ) {
         self.moveToTrash = moveToTrash
+        self.scanRoots = scanRoots
+        self.terraformDirs = terraformDirs
         self.onCleaned = onCleaned
     }
 
@@ -60,7 +71,10 @@ final class CachesModel {
     func refresh(priority: ScanPriority, progress: ScanProgress? = nil) async {
         guard !isScanning, !isCleaning else { return }
         isScanning = true
-        let report = await CacheScanner.scan(CacheScanner.Options(priority: priority, progress: progress))
+        let definitions = CacheCatalog.definitions(scanRoots: scanRoots())
+        var options = CacheScanner.Options(definitions: definitions, priority: priority, progress: progress)
+        options.terraformDirs = terraformDirs()
+        let report = await CacheScanner.scan(options)
         apply(report)
         isScanning = false
     }
@@ -257,14 +271,18 @@ private struct CacheEntryRow: View {
             }
             let items = entry.items.filter { $0.reason != nil }
             if !items.isEmpty {
-                DisclosureGroup("\(items.count) old or unused") {
+                // Build dirs list every profile, not only old ones.
+                DisclosureGroup(items.contains { $0.lockFile != nil } ? "\(items.count) build parts" : "\(items.count) old or unused") {
                     ForEach(items) { item in
                         HStack(alignment: .firstTextBaseline) {
                             Toggle("", isOn: binding(item.id)).labelsHidden().toggleStyle(.checkbox)
-                                .disabled(!entry.safety.isCleanable || model.isCleaning || model.isSelected(entry.id))
+                                .disabled(!entry.safety.isCleanable || !item.isCleanable || model.isCleaning || model.isSelected(entry.id))
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(item.name).lineLimit(1).truncationMode(.middle)
                                 Text(item.reason ?? "").font(.caption).foregroundStyle(.secondary)
+                                if let blocked = item.blockedReason {
+                                    Text("Not cleanable: \(blocked)").font(.caption).foregroundStyle(.red)
+                                }
                             }
                             Spacer()
                             Text(ByteFormat.string(item.bytes)).monospacedDigit()

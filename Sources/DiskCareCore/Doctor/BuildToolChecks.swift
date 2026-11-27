@@ -101,6 +101,20 @@ public struct TerraformPluginCacheCheck: DoctorCheck {
         )
     }
 
+    /// The plugin cache dir in effect (config file first, as Terraform reads it).
+    public static func pluginCacheDirectory(home: String, environment: [String: String]) -> String? {
+        let check = TerraformPluginCacheCheck()
+        let context = DoctorContext(home: home, environment: environment, measureSizes: false)
+        if let value = context.read(check.configPath(context)).flatMap({ TerraformRC.value(of: TerraformRC.cacheDirKey, in: $0) }) {
+            return TerraformRC.expand(value, home: home)
+        }
+        return ShellRC.value(of: "TF_PLUGIN_CACHE_DIR", environment: environment, home: home).map { TerraformRC.expand($0, home: home) }
+    }
+
+    public func managedLocations(_ context: DoctorContext) -> [String] {
+        Self.pluginCacheDirectory(home: context.home, environment: context.environment).map { [$0] } ?? []
+    }
+
     public func proposedChange(_ context: DoctorContext) throws -> ConfigChange? {
         let path = configPath(context)
         let original = context.read(path)
@@ -119,16 +133,21 @@ public struct TerraformPluginCacheCheck: DoctorCheck {
     }
 }
 
-/// Without a shared `target-dir`, every Rust project (and every worktree of it) compiles all dependencies again.
-public struct CargoSharedTargetCheck: DoctorCheck {
-    public let id = "cargo-shared-target"
-    public let title = "Cargo shared target directory"
+/// Rust builds: a shared `target-dir` saves compiling dependencies twice but never goes stale (every
+/// build touches it), so it grows until the disk is full. sccache shares compiled crates instead,
+/// under a size cap, while each project keeps a `target/` that idle-day cleanup can remove.
+public struct CargoBuildCacheCheck: DoctorCheck {
+    public let id = "cargo-build-cache"
+    public let title = "Cargo build cache"
     public var supportsAutoFix: Bool { true }
 
     public init() {}
 
+    /// A shared build dir above this is reported as a warning.
+    public static let largeSharedDirBytes: Int64 = 15_000_000_000
+
     func cargoHome(_ context: DoctorContext) -> String {
-        context.environment["CARGO_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? context.home + "/.cargo"
+        CargoBuildLocator.cargoHome(home: context.home, environment: context.environment)
     }
 
     /// `config.toml`, or the legacy extensionless `config` when only that exists.
@@ -138,62 +157,91 @@ public struct CargoSharedTargetCheck: DoctorCheck {
         return home + "/config.toml"
     }
 
-    func sharedTargetDir(_ context: DoctorContext) -> String { cargoHome(context) + "/target-shared" }
+    /// `build.rustc-wrapper` from the config file, else `RUSTC_WRAPPER` (environment or shell rc).
+    func rustcWrapper(_ context: DoctorContext) -> String? {
+        context.read(configPath(context)).flatMap { CargoConfig.value(of: "build.rustc-wrapper", in: $0) }
+            ?? ShellRC.value(of: "RUSTC_WRAPPER", environment: context.environment, home: context.home)
+    }
 
-    /// The shared target still holds roughly the largest project's build.
+    func sccache(_ context: DoctorContext) -> String? {
+        ProcessRunner.locate("sccache", environment: context.environment, home: context.home)
+    }
+
+    /// Where sccache keeps its cache (`SCCACHE_DIR`, else the macOS default).
+    public static func sccacheDirectory(home: String, environment: [String: String]) -> String {
+        ShellRC.value(of: "SCCACHE_DIR", environment: environment, home: home) ?? home + "/Library/Caches/Mozilla.sccache"
+    }
+
+    public func managedLocations(_ context: DoctorContext) -> [String] {
+        guard rustcWrapper(context)?.hasSuffix("sccache") == true else { return [] }
+        return [Self.sccacheDirectory(home: context.home, environment: context.environment)]
+    }
+
+    /// Kept for the Overview: roughly what per-project target dirs duplicate.
     public static func estimatedSavings(_ report: ScanReport?) -> Int64? {
         Savings.duplicates(of: .cargoTarget, in: report, keepCopies: 1)?.savings
     }
 
     public func evaluate(_ context: DoctorContext) -> CheckResult {
         let path = configPath(context)
-        let text = context.read(path)
-        let fileTarget = text.flatMap(CargoConfig.targetDir(in:))
-        let envTarget = context.environment["CARGO_TARGET_DIR"].flatMap { $0.isEmpty ? nil : $0 }
-        let shellTarget = context.shellExports(of: "CARGO_TARGET_DIR")
+        let wrapper = rustcWrapper(context)
+        let shared = CargoBuildLocator.locate(home: context.home, environment: context.environment, scanRoots: context.report?.roots ?? [])
+            .filter { context.fileExists($0.path) }
         let usage = Savings.duplicates(of: .cargoTarget, in: context.report, keepCopies: 1)
 
         var details: [String] = []
-        details.append(text == nil ? "\(path.abbreviatingHome): not found" : "\(path.abbreviatingHome): build.target-dir = \(fileTarget.map { "\"\($0)\"" } ?? "(unset)")")
-        if let envTarget { details.append("CARGO_TARGET_DIR=\(envTarget) (current environment)") }
-        for export in shellTarget { details.append("CARGO_TARGET_DIR=\(export.value) exported in \(export.file.abbreviatingHome)") }
-        if let usage, usage.count > 0 { details.append("\(usage.count) cargo target dirs use \(ByteFormat.string(usage.total))") }
-        if ProcessRunner.locate("cargo-sweep", environment: context.environment, home: context.home) == nil
-            && !context.fileExists(cargoHome(context) + "/bin/cargo-sweep") {
-            details.append("Tip: `cargo install cargo-sweep`, then `cargo sweep --time 30 -r <dir>` trims stale build artifacts.")
+        details.append("\(path.abbreviatingHome): build.rustc-wrapper = \(wrapper.map { "\"\($0)\"" } ?? "(unset)")")
+        if let usage, usage.count > 0 { details.append("\(usage.count) per-project target dirs use \(ByteFormat.string(usage.total))") }
+        var largest: (location: CargoBuildLocation, bytes: Int64)?
+        for location in shared {
+            let bytes = context.measureSizes ? FileSystemScanner.scan(ScanOptions(roots: [location.path], priority: .background)).stats.bytes : nil
+            details.append("shared build dir \(location.path.abbreviatingHome) (\(location.source))" + (bytes.map { ": \(ByteFormat.string($0))" } ?? ""))
+            if let bytes, bytes > (largest?.bytes ?? -1) { largest = (location, bytes) }
         }
 
-        let target = sharedTargetDir(context)
-        let fix = "Add `[build] target-dir = \"\(target)\"` to \(path.abbreviatingHome) \(text == nil ? "(new file)" : "(existing file backed up first)"). "
-            + "Trade-offs: builds of different projects share one lock, `cargo clean` wipes the shared dir, binaries move to \(target.abbreviatingHome)/{debug,release}. "
-            + "Delete old per-project target dirs with `diskcare clean --kind cargo-target`."
-        let savings = Savings.shown(usage?.savings)
+        let sccache = self.sccache(context)
+        let usesSccache = wrapper?.hasSuffix("sccache") == true
+        let installHint = sccache == nil ? "Install it (`brew install sccache`), then run `diskcare doctor --fix \(id)`. " : ""
+        let fix = usesSccache ? nil
+            : "Use sccache: \(installHint)It adds `[build] rustc-wrapper = \"\(sccache ?? "/opt/homebrew/bin/sccache")\"` to \(path.abbreviatingHome) "
+                + "(file backed up first). Compiled crates are shared between projects and worktrees with a 10 GB cap (`SCCACHE_CACHE_SIZE`)."
+        let canFix = !usesSccache && sccache != nil && wrapper == nil
 
-        if fileTarget != nil {
-            return CheckResult(id: id, title: title, status: .ok, finding: "Shared target-dir is configured in \(path.abbreviatingHome).", details: details, estimatedSavingsBytes: savings)
-        }
-        if envTarget != nil || !shellTarget.isEmpty {
+        if !shared.isEmpty {
+            let stale = "A shared build dir never goes stale: every build touches it, so idle-day cleanup never applies and it grows until cleaned. "
+                + "DiskCare measures it under Caches; clean its incremental/ dirs regularly "
+                + "(`diskcare caches clean 'cargo-target-shared/debug/incremental' --apply`), or remove the setting and use sccache."
+            if let largest, largest.bytes > Self.largeSharedDirBytes {
+                return CheckResult(
+                    id: id, title: title, status: .warning,
+                    finding: "Shared build dir \(largest.location.path.abbreviatingHome) holds \(ByteFormat.string(largest.bytes)).",
+                    details: details, fix: stale, isAutoFixable: false, fixTargetPath: path
+                )
+            }
             return CheckResult(
-                id: id, title: title, status: .info,
-                finding: "Shared target dir only set through CARGO_TARGET_DIR; IDEs (rust-analyzer) and GUI tools may not see it.",
-                details: details, estimatedSavingsBytes: savings, fix: fix, isAutoFixable: true, fixTargetPath: path
+                id: id, title: title, status: .info, finding: "A shared Cargo build dir is configured.",
+                details: details, fix: stale, isAutoFixable: false, fixTargetPath: path
             )
         }
-        let large = (usage?.total ?? 0) >= Savings.significant
+        if usesSccache {
+            return CheckResult(id: id, title: title, status: .ok, finding: "sccache shares compiled crates with a size cap.", details: details)
+        }
         return CheckResult(
-            id: id, title: title, status: large ? .warning : .info,
-            finding: "Each Rust project and worktree builds its dependencies into its own target/ directory.",
-            details: details, estimatedSavingsBytes: savings, fix: fix, isAutoFixable: true, fixTargetPath: path
+            id: id, title: title, status: .info,
+            finding: "Each Rust project and worktree compiles its dependencies into its own target/ (cleaned by `diskcare clean --kind cargo-target`).",
+            details: details, estimatedSavingsBytes: nil, fix: fix, isAutoFixable: canFix, fixTargetPath: path
         )
     }
 
     public func proposedChange(_ context: DoctorContext) throws -> ConfigChange? {
+        guard rustcWrapper(context) == nil, let sccache = sccache(context) else { return nil }
         let path = configPath(context)
         let original = context.read(path)
-        guard let merged = CargoConfig.merged(original, targetDir: sharedTargetDir(context)) else { return nil }
+        guard let merged = CargoConfig.merged(original, key: "rustc-wrapper", value: sccache,
+                                              comment: "shared compiler cache with a size cap (added by diskcare doctor)") else { return nil }
         return ConfigChange(
             path: path, originalContents: original, newContents: merged,
-            followUp: ["Delete old per-project target dirs: `diskcare clean --kind cargo-target --idle-days 0` (review the plan first)."]
+            followUp: ["Per-project target dirs of idle projects can go: `diskcare clean --kind cargo-target --idle-days 14` (review the plan first)."]
         )
     }
 }

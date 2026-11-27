@@ -19,10 +19,13 @@ public enum CleanupError: Error, CustomStringConvertible {
     case partiallyRemoved(staging: String, underlying: String)
     /// The directory at the path is not the one that was checked (replaced, or now a symlink).
     case changed(String)
+    /// The owning tool holds its lock (a build is running).
+    case locked(String)
 
     public var description: String {
         switch self {
         case .changed(let path): "\(path.abbreviatingHome) changed since it was checked"
+        case .locked(let lockFile): "in use: \(lockFile.abbreviatingHome) is locked (build running?)"
         case .partiallyRemoved(let staging, let underlying):
             "\(underlying); partially deleted, leftover at \(staging.abbreviatingHome)"
         }
@@ -147,6 +150,28 @@ public enum Cleaner {
     static func trash(_ path: String, expected: DeletionGuard.FileID?) throws {
         try verify(path, expected: expected)
         try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+    }
+
+    /// Like `removeTree`, but first takes the tool's lock without waiting (a running build holds it)
+    /// and keeps it until the directory has been renamed away; the slow delete happens after.
+    static func removeTree(_ path: String, mode: CleanupMode, expected: DeletionGuard.FileID?, holdingLock lockFile: String) throws {
+        let descriptor = open(lockFile, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        if descriptor >= 0 {
+            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+                close(descriptor)
+                throw CleanupError.locked(lockFile)
+            }
+        }
+        let staging: String
+        do {
+            defer { if descriptor >= 0 { close(descriptor) } }
+            if mode == .trash {
+                try trash(path, expected: expected)
+                return
+            }
+            staging = try moveAside(path, expected: expected)
+        }
+        try removeStaged(staging, original: path)
     }
 
     /// Removes a directory that is already out of the way (renamed, or a leftover staging dir).

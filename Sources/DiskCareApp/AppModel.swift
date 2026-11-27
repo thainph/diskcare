@@ -14,6 +14,8 @@ final class AppModel {
     /// Global developer caches (~/Library/Caches, ~/.cache, package manager stores…).
     @ObservationIgnored private(set) lazy var caches = CachesModel(
         moveToTrash: { [settings] in settings.moveToTrash },
+        scanRoots: { [settings] in settings.roots.map(ScanOptions.normalize) },
+        terraformDirs: { [weak self] in self?.report.map { $0.artifacts.filter { $0.kind == .terraform }.map(\.path) } },
         onCleaned: { [weak self] _ in self?.refreshFreeSpace() }
     )
 

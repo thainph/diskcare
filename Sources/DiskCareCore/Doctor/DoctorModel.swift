@@ -67,14 +67,25 @@ public struct DoctorContext: Sendable {
         self.measureSizes = measureSizes
     }
 
-    /// Shell startup files scanned (read-only) for `export VAR=…`.
-    var shellRCFiles: [String] {
+    /// Files exporting `name`, e.g. `~/.zshrc: TF_PLUGIN_CACHE_DIR=…`.
+    func shellExports(of name: String) -> [(file: String, value: String)] {
+        ShellRC.exports(of: name, home: home)
+    }
+
+    func fileExists(_ path: String) -> Bool { FileManager.default.fileExists(atPath: path) }
+
+    func read(_ path: String) -> String? { try? String(contentsOfFile: path, encoding: .utf8) }
+}
+
+/// Shell startup files, read-only. GUI apps do not inherit what they export, so DiskCare reads them.
+enum ShellRC {
+    static func files(home: String) -> [String] {
         [".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map { home + "/" + $0 }
     }
 
     /// Files exporting `name`, e.g. `~/.zshrc: TF_PLUGIN_CACHE_DIR=…`.
-    func shellExports(of name: String) -> [(file: String, value: String)] {
-        shellRCFiles.compactMap { file in
+    static func exports(of name: String, home: String) -> [(file: String, value: String)] {
+        files(home: home).compactMap { file in
             guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
             for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
                 var body = line.trimmingCharacters(in: .whitespaces)
@@ -88,9 +99,12 @@ public struct DoctorContext: Sendable {
         }
     }
 
-    func fileExists(_ path: String) -> Bool { FileManager.default.fileExists(atPath: path) }
-
-    func read(_ path: String) -> String? { try? String(contentsOfFile: path, encoding: .utf8) }
+    /// `name` from the environment, else from the first shell rc file exporting it; `$HOME` expanded.
+    static func value(of name: String, environment: [String: String], home: String) -> String? {
+        if let value = environment[name], !value.isEmpty { return value }
+        guard let value = exports(of: name, home: home).first?.value, !value.isEmpty else { return nil }
+        return value.replacingOccurrences(of: "${HOME}", with: home).replacingOccurrences(of: "$HOME", with: home)
+    }
 }
 
 /// A pluggable doctor check. Checks must be read-only in `evaluate`.
@@ -102,11 +116,15 @@ public protocol DoctorCheck: Sendable {
     func evaluate(_ context: DoctorContext) -> CheckResult
     /// The config edit that fixes the problem, or nil when nothing needs to change / not auto-fixable.
     func proposedChange(_ context: DoctorContext) throws -> ConfigChange?
+    /// Directories tools write to because of this check's configuration. Whatever doctor sets up,
+    /// DiskCare must also measure: every one must be covered by a cache definition.
+    func managedLocations(_ context: DoctorContext) -> [String]
 }
 
 extension DoctorCheck {
     public var supportsAutoFix: Bool { false }
     public func proposedChange(_ context: DoctorContext) throws -> ConfigChange? { nil }
+    public func managedLocations(_ context: DoctorContext) -> [String] { [] }
 }
 
 public enum DoctorError: Error, Sendable, CustomStringConvertible {
@@ -126,7 +144,7 @@ public enum DoctorError: Error, Sendable, CustomStringConvertible {
 public enum Doctor {
     public static let checks: [any DoctorCheck] = [
         TerraformPluginCacheCheck(),
-        CargoSharedTargetCheck(),
+        CargoBuildCacheCheck(),
         NpmToPnpmCheck(),
         PnpmGlobalVirtualStoreCheck(),
         DockerBuildCacheGCCheck(),

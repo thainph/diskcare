@@ -63,6 +63,22 @@ public enum CacheItemRule: Sendable, Codable, Equatable {
     case versions(depth: Int, keep: Int, grouping: Grouping)
     /// One item per child directory (Xcode DerivedData); unused for `staleDays` is recommended.
     case projects(staleDays: Int)
+    /// Cargo build dirs `buildDirDepth` levels below the root: one item per profile (manual only)
+    /// and per profile's `incremental` dir (recommended).
+    case cargoProfiles(buildDirDepth: Int)
+    /// Terraform plugin cache (`<host>/<namespace>/<name>/<version>`): an old version is only
+    /// recommended when no `.terraform.lock.hcl` / `.terraform` of a scanned project uses it.
+    case terraformProviders
+
+    /// Levels below a cache root the scanner must index for this rule.
+    var indexDepth: Int {
+        switch self {
+        case .versions(let depth, _, _): max(depth, TreeIndex.defaultDepth)
+        case .projects: TreeIndex.defaultDepth
+        case .cargoProfiles(let buildDirDepth): buildDirDepth + 3  // [hash…/] triple/profile/incremental
+        case .terraformProviders: 4
+        }
+    }
 }
 
 public struct CacheDefinition: Sendable, Codable, Identifiable {
