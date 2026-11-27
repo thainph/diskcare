@@ -20,6 +20,7 @@ extension ArtifactKind {
         case .gradle: "Gradle build"
         case .dartTool: "Dart / Flutter build"
         case .xcodeDerivedData: "Xcode DerivedData"
+        case .cleanupLeftover: "Unfinished DiskCare cleanup"
         case .gitMetadata: "Git metadata"
         }
     }

@@ -44,7 +44,7 @@ public enum CacheScanner {
         var scanOptions = ScanOptions(roots: Array(claimed), excludedPaths: claimed, stayOnDevice: true, priority: options.priority, progress: options.progress)
         if let workers = options.workerCount { scanOptions.workerCount = workers }
         let tree = claimed.isEmpty ? nil : FileSystemScanner.scan(scanOptions)
-        let index = TreeIndex(tree: tree, itemRoots: resolved.filter { $0.0.itemRule != nil }.flatMap(\.1))
+        let index = TreeIndex(tree: tree, itemRoots: Array(claimed))
 
         let entries = resolved.compactMap { definition, paths -> CacheEntry? in
             let roots = paths.compactMap { index.root(at: $0) }
@@ -59,7 +59,8 @@ public enum CacheScanner {
                 command: definition.nativeCommand.flatMap { options.resolver.resolve($0) != nil ? $0.display : nil },
                 nativeCommand: definition.nativeCommand, fallback: definition.fallback,
                 note: definition.note,
-                items: items(for: definition, roots: roots, index: index, now: options.now)
+                items: (items(for: definition, roots: roots, index: index, now: options.now)
+                    + leftovers(for: definition, roots: roots, index: index)).sorted { $0.bytes > $1.bytes }
             )
         }
         return CacheReport(
@@ -117,13 +118,33 @@ public enum CacheScanner {
         }
         return candidates.map { candidate in
             let mark = marks[candidate.id]
+            // Old browser/tool versions and stale DerivedData are pure re-downloads/rebuilds.
             return CacheItem(
                 id: candidate.id, entryID: definition.id, name: candidate.name, path: candidate.node.path,
                 bytes: candidate.node.total.bytes, hardlinkedBytes: candidate.node.total.hardlinkedBytes,
-                lastUsedAt: candidate.lastUsedAt, isRecommended: mark?.recommended ?? false, reason: mark?.reason
+                lastUsedAt: candidate.lastUsedAt, isRecommended: mark?.recommended ?? false,
+                isPreselectable: true, reason: mark?.reason
             )
         }
-        .sorted { $0.bytes > $1.bytes }
+    }
+
+    /// `.diskcare-deleting-*` directories left by an interrupted cleanup: always worth finishing.
+    static func leftovers(for definition: CacheDefinition, roots: [DirectoryNode], index: TreeIndex) -> [CacheItem] {
+        guard definition.safety.isCleanable else { return [] }
+        let multipleRoots = roots.count > 1
+        return roots.flatMap { root in
+            index.descendants(of: root, upTo: TreeIndex.defaultDepth)
+                .filter { ($0.path as NSString).lastPathComponent.hasPrefix(Cleaner.stagingPrefix) }
+                .map { node in
+                    let relative = String(node.path.dropFirst(root.path.count + 1))
+                    let name = (multipleRoots ? (root.path as NSString).lastPathComponent + "/" : "") + relative
+                    return CacheItem(
+                        id: definition.id + "/" + name, entryID: definition.id, name: name, path: node.path,
+                        bytes: node.total.bytes, hardlinkedBytes: node.total.hardlinkedBytes, lastUsedAt: nil,
+                        isRecommended: true, isPreselectable: true, reason: "left over from an interrupted cleanup"
+                    )
+                }
+        }
     }
 
     struct ItemCandidate {
@@ -218,7 +239,9 @@ struct TreeIndex {
     private let roots: [String: Int]
     private let children: [Int32: [Int]]
 
-    init(tree: ScanTree?, itemRoots: [String], maxDepth: Int = 2) {
+    static let defaultDepth = 2
+
+    init(tree: ScanTree?, itemRoots: [String], maxDepth: Int = defaultDepth) {
         nodes = tree?.nodes ?? []
         var roots: [String: Int] = [:]
         for (offset, node) in nodes.enumerated() where node.parent < 0 {
@@ -250,5 +273,16 @@ struct TreeIndex {
             level = level.flatMap { children[$0.id, default: []].map { nodes[$0] } }
         }
         return level
+    }
+
+    /// Every indexed descendant from depth 1 to `depth`.
+    func descendants(of node: DirectoryNode, upTo depth: Int) -> [DirectoryNode] {
+        var level = [node]
+        var all: [DirectoryNode] = []
+        for _ in 0..<depth {
+            level = level.flatMap { children[$0.id, default: []].map { nodes[$0] } }
+            all += level
+        }
+        return all
     }
 }

@@ -15,6 +15,8 @@ public enum ArtifactKind: String, Codable, Sendable, CaseIterable {
     case gradle = "gradle"
     case dartTool = "dart-tool"
     case xcodeDerivedData = "xcode-derived-data"
+    /// `.diskcare-deleting-*`: a directory DiskCare moved aside but could not finish deleting.
+    case cleanupLeftover = "diskcare-leftover"
     case gitMetadata = ".git"
 
     /// Whether deleting it is safe because a tool can rebuild it.
@@ -33,6 +35,7 @@ public enum ArtifactKind: String, Codable, Sendable, CaseIterable {
         case .composerVendor: "composer install"
         case .cocoaPods: "pod install"
         case .gradle, .dartTool, .xcodeDerivedData: "rebuilt on next build"
+        case .cleanupLeftover: "nothing to restore (interrupted cleanup)"
         case .gitMetadata: "not regenerable"
         }
     }
@@ -62,6 +65,7 @@ enum ArtifactRules {
         case ".gradle": return .gradle
         case ".dart_tool": return .dartTool
         case "DerivedData": return .xcodeDerivedData
+        case _ where name.hasPrefix(Cleaner.stagingPrefix): return .cleanupLeftover
         default: break
         }
         if vendored { return nil }

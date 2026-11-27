@@ -14,52 +14,69 @@ public struct CleanupOutcome: Sendable, Codable {
     public let error: String?
 }
 
+public enum CleanupError: Error, CustomStringConvertible {
+    /// Moved aside but not fully deleted; the staging directory is left for the next cleanup.
+    case partiallyRemoved(staging: String, underlying: String)
+
+    public var description: String {
+        switch self {
+        case .partiallyRemoved(let staging, let underlying):
+            "\(underlying); partially deleted, leftover at \(staging.abbreviatingHome)"
+        }
+    }
+}
+
 /// Executes a cleanup plan. Every candidate is re-validated right before it is touched.
 public enum Cleaner {
     public static func execute(
         _ candidates: [CleanupCandidate],
         roots: [String],
         mode: CleanupMode,
+        log: DeletionLog = .standard,
         progress: (@Sendable (CleanupOutcome) -> Void)? = nil
     ) -> [CleanupOutcome] {
         let artifacts = candidates.filter { $0.action == .deleteArtifact }
         let worktrees = candidates.filter { $0.action == .removeWorktree }
         let results = LockedArray<CleanupOutcome?>(repeating: nil, count: candidates.count)
+        let guardrail = DeletionGuard(roots: roots)
+
+        func finish(_ outcome: CleanupOutcome, mode: String) -> CleanupOutcome {
+            let candidate = outcome.candidate
+            log.append(DeletionRecord(
+                path: candidate.path, bytes: candidate.bytes, mode: mode,
+                source: candidate.action == .removeWorktree ? "worktree" : "artifact", result: outcome.error ?? "ok"
+            ))
+            progress?(outcome)
+            return outcome
+        }
 
         // Artifacts are independent directories: delete in parallel.
         DispatchQueue.concurrentPerform(iterations: artifacts.count) { index in
-            let outcome = deleteArtifact(artifacts[index], roots: roots, mode: mode)
-            results[index] = outcome
-            progress?(outcome)
+            results[index] = finish(deleteArtifact(artifacts[index], guardrail: guardrail, mode: mode), mode: mode.rawValue)
         }
         // Worktrees of one repository share git locks: remove sequentially.
         for (offset, candidate) in worktrees.enumerated() {
-            let outcome = removeWorktree(candidate, roots: roots)
-            results[artifacts.count + offset] = outcome
-            progress?(outcome)
+            results[artifacts.count + offset] = finish(removeWorktree(candidate, guardrail: guardrail), mode: "git worktree remove")
         }
         return results.values.compactMap { $0 }
     }
 
-    /// Checks that a path is still a real directory strictly inside one of the scan roots.
+    /// Checks that a path is still a real directory strictly inside one of the scan roots
+    /// (and not a protected location); see `DeletionGuard`.
     static func validate(_ path: String, roots: [String]) -> String? {
-        let normalized = ScanOptions.normalize(path)
-        guard normalized == path else { return "path is not normalized" }
-        guard roots.contains(where: { path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) else { return "outside scan roots" }
-        var info = stat()
-        guard lstat(path, &info) == 0 else { return "no longer exists" }
-        guard (info.st_mode & S_IFMT) == S_IFDIR else { return "not a directory (symlink?)" }
-        return nil
+        DeletionGuard(roots: roots).checkRemoval(path)
     }
 
-    private static func deleteArtifact(_ candidate: CleanupCandidate, roots: [String], mode: CleanupMode) -> CleanupOutcome {
-        if let problem = validate(candidate.path, roots: roots) {
+    private static func deleteArtifact(_ candidate: CleanupCandidate, guardrail: DeletionGuard, mode: CleanupMode) -> CleanupOutcome {
+        if let problem = guardrail.checkRemoval(candidate.path) {
             return CleanupOutcome(candidate: candidate, succeeded: false, error: problem)
         }
         do {
             switch mode {
             case .trash:
                 try FileManager.default.trashItem(at: URL(fileURLWithPath: candidate.path), resultingItemURL: nil)
+            case .delete where candidate.kind == .cleanupLeftover:
+                try removeStaged(candidate.path, original: candidate.path)
             case .delete:
                 try removeTree(candidate.path)
             }
@@ -69,18 +86,32 @@ public enum Cleaner {
         }
     }
 
+    /// Prefix of the directory a tree is renamed to while it is being deleted. One left behind
+    /// (crash, permission error) is listed by the next scan as a leftover to finish.
+    public static let stagingPrefix = ".diskcare-deleting-"
+
     /// Renames the directory out of the way first (atomic for the project), then removes it
     /// with removefile(3), which is much faster than FileManager for large trees.
     static func removeTree(_ path: String) throws {
         let parent = (path as NSString).deletingLastPathComponent
-        let staging = parent + "/.diskcare-deleting-" + UUID().uuidString
+        let staging = parent + "/" + stagingPrefix + UUID().uuidString
         let target = rename(path, staging) == 0 ? staging : path
-        guard let removefile = systemRemovefile else {
-            try FileManager.default.removeItem(atPath: target)
-            return
-        }
-        guard removefile(target, nil, removefileRecursive) == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        try removeStaged(target, original: path)
+    }
+
+    /// Removes a directory that is already out of the way (renamed, or a leftover staging dir).
+    static func removeStaged(_ target: String, original: String) throws {
+        do {
+            if let removefile = systemRemovefile {
+                guard removefile(target, nil, removefileRecursive) == 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+            } else {
+                try FileManager.default.removeItem(atPath: target)
+            }
+        } catch {
+            guard target != original else { throw error }
+            throw CleanupError.partiallyRemoved(staging: target, underlying: "\(error)")
         }
     }
 
@@ -92,8 +123,8 @@ public enum Cleaner {
         return dlsym(defaultHandle, "removefile").map { unsafeBitCast($0, to: RemovefileFunction.self) }
     }()
 
-    private static func removeWorktree(_ candidate: CleanupCandidate, roots: [String]) -> CleanupOutcome {
-        if let problem = validate(candidate.path, roots: roots) {
+    private static func removeWorktree(_ candidate: CleanupCandidate, guardrail: DeletionGuard) -> CleanupOutcome {
+        if let problem = guardrail.checkRemoval(candidate.path) {
             return CleanupOutcome(candidate: candidate, succeeded: false, error: problem)
         }
         guard let repository = candidate.mainRepositoryPath else {

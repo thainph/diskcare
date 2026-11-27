@@ -96,13 +96,20 @@ import Testing
             action: .deleteArtifact, path: "/tmp/not-a-root/node_modules", kind: .nodeModules,
             bytes: 1, hardlinkedBytes: 0, idleDays: 40, workspacePath: nil, mainRepositoryPath: nil, reason: "test"
         )
-        let outcomes = Cleaner.execute([target, outside], roots: [normalizedRoot], mode: .delete)
+        let log = DeletionLog(path: root + "-deletions.jsonl")
+        defer { try? FileManager.default.removeItem(atPath: log.path) }
+        let outcomes = Cleaner.execute([target, outside], roots: [normalizedRoot], mode: .delete, log: log)
 
         #expect(outcomes.first { $0.candidate.path == target.path }?.succeeded == true)
         #expect(outcomes.first { $0.candidate.path == outside.path }?.error == "outside scan roots")
         #expect(!FileManager.default.fileExists(atPath: target.path))
         // No staging directory left behind.
         #expect(try FileManager.default.contentsOfDirectory(atPath: normalizedRoot + "/app").isEmpty)
+        // Both attempts are audited.
+        let records = log.records()
+        #expect(records.count == 2)
+        #expect(records.contains { $0.path == target.path && $0.result == "ok" && $0.source == "artifact" && $0.bytes == 10_000 })
+        #expect(records.contains { $0.path == outside.path && $0.result == "outside scan roots" })
     }
 
     @Test func vendoredBuildDirectoriesAreNotArtifacts() {

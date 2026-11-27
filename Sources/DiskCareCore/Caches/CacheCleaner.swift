@@ -68,7 +68,8 @@ public enum CacheCleanError: Error, CustomStringConvertible {
 
 public enum CacheCleaner {
     /// Builds targets from ids (`homebrew`, `playwright/chromium-1228`). An item whose entry is also
-    /// selected is dropped. Throws for unknown ids and for anything that must not be cleaned.
+    /// selected, or that lies inside another selected item, is dropped. Throws for unknown ids and for
+    /// anything that must not be cleaned.
     public static func targets(ids: [String], in report: CacheReport) throws -> [CacheCleanTarget] {
         var targets: [CacheCleanTarget] = []
         var seen = Set<String>()
@@ -91,8 +92,11 @@ public enum CacheCleaner {
             }
         }
         let wholeEntries = Set(targets.filter { $0.kind == .entry }.map(\.id))
+        let itemPaths = targets.filter { $0.kind == .item }.compactMap(\.paths.first)
         return targets.filter { target in
-            target.kind == .entry || !wholeEntries.contains(where: { target.id.hasPrefix($0 + "/") })
+            guard target.kind == .item, let path = target.paths.first else { return true }
+            return !wholeEntries.contains(where: { target.id.hasPrefix($0 + "/") })
+                && !itemPaths.contains(where: { path.hasPrefix($0 + "/") })
         }
     }
 
@@ -102,12 +106,20 @@ public enum CacheCleaner {
         mode: CleanupMode = .delete,
         resolver: CommandResolver = .standard(),
         home: String = NSHomeDirectory(),
+        log: DeletionLog? = nil,
         progress: (@Sendable (CacheCleanOutcome) -> Void)? = nil
     ) -> CacheCleanResult {
+        let log = log ?? DeletionLog(path: home + "/Library/Application Support/DiskCare/deletions.jsonl")
         let freeBefore = Cleaner.availableCapacity(at: home)
         let results = LockedArray<CacheCleanOutcome?>(repeating: nil, count: targets.count)
         DispatchQueue.concurrentPerform(iterations: targets.count) { index in
             let outcome = clean(targets[index], mode: mode, resolver: resolver, home: home)
+            for path in outcome.target.paths {
+                log.append(DeletionRecord(
+                    path: path, bytes: outcome.target.paths.count == 1 ? outcome.target.bytes : 0, mode: outcome.action,
+                    source: outcome.target.kind == .item ? "cache-item" : "cache-entry", result: outcome.error ?? "ok"
+                ))
+            }
             results[index] = outcome
             progress?(outcome)
         }
@@ -134,11 +146,15 @@ public enum CacheCleaner {
 
         if target.kind == .item {
             let path = target.paths.first ?? ""
-            if let problem = Cleaner.validate(path, roots: target.containers) {
+            if let problem = DeletionGuard(roots: target.containers, home: home).checkRemoval(path) {
                 return outcome("skipped", error: problem)
             }
             do {
-                try remove(path, mode: mode)
+                if mode == .delete, (path as NSString).lastPathComponent.hasPrefix(Cleaner.stagingPrefix) {
+                    try Cleaner.removeStaged(path, original: path)
+                } else {
+                    try remove(path, mode: mode)
+                }
                 return outcome(mode == .trash ? "trash dir" : "delete dir")
             } catch {
                 return outcome("delete dir", error: "\(error)")
@@ -175,16 +191,9 @@ public enum CacheCleaner {
     }
 
     /// Last line of defence before emptying a directory: it must still be a real directory and not
-    /// one of the broad locations that merely contain caches.
+    /// one of the broad locations that merely contain caches (nor an alias or parent of one).
     static func checkCacheRoot(_ path: String, home: String) -> String? {
-        let normalized = ScanOptions.normalize(path)
-        guard normalized == path, path.hasPrefix("/") else { return "path is not normalized" }
-        let protected = ["/", "/Users", home, home + "/Library", home + "/Library/Caches", home + "/Library/Application Support",
-                         home + "/.cache", home + "/.config", home + "/.local", home + "/.local/share", home + "/Library/Developer"]
-        guard !protected.contains(path) else { return "refusing to empty a top-level directory" }
-        guard path.split(separator: "/").count >= 3 else { return "path too shallow" }
-        guard CachePaths.isRealDirectory(path) else { return "not a directory (missing or symlink?)" }
-        return nil
+        DeletionGuard(roots: [], home: home).checkEmptying(path)
     }
 
     /// Deletes every child of `root` and keeps `root` itself. Read-only trees (Go modules) are

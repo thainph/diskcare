@@ -31,6 +31,24 @@ final class CachesModel {
 
     var selectedBytes: Int64 { selectedTargets.reduce(0) { $0 + $1.bytes } }
 
+    /// Large cleanups and anything "Select all safe" would not pick need a second, explicit confirmation.
+    static let largeCleanupBytes: Int64 = 20_000_000_000
+
+    /// Why the selection needs a second confirmation; nil when one is enough.
+    var secondConfirmationReason: String? {
+        guard let report else { return nil }
+        let targets = selectedTargets
+        let safe = Set(report.allSafeIDs)
+        let manual = targets.filter { !safe.contains($0.id) }
+        var reasons: [String] = []
+        if selectedBytes > Self.largeCleanupBytes { reasons.append("This frees more than \(ByteFormat.string(Self.largeCleanupBytes)).") }
+        if !manual.isEmpty {
+            let names = manual.prefix(3).map(\.title).joined(separator: ", ") + (manual.count > 3 ? "…" : "")
+            reasons.append("Not picked by \"Select all safe\": \(names). These may need a full rebuild or re-download.")
+        }
+        return reasons.isEmpty ? nil : reasons.joined(separator: "\n")
+    }
+
     var usesTrash: Bool { moveToTrash() }
 
     func scan(priority: ScanPriority = .userInitiated) {
@@ -104,6 +122,7 @@ struct CachesView: View {
     /// nil = no inner scroll view (the host page scrolls).
     var listMaxHeight: CGFloat? = 320
     @State private var confirming = false
+    @State private var confirmingAgain = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -129,9 +148,23 @@ struct CachesView: View {
         }
         .task { if model.report == nil { model.scan() } }
         .confirmationDialog(confirmTitle, isPresented: $confirming) {
-            Button(model.usesTrash ? "Move to Trash" : "Clean", role: .destructive) { model.cleanSelected() }
+            Button(model.usesTrash ? "Move to Trash" : "Clean", role: .destructive) {
+                if model.secondConfirmationReason != nil {
+                    confirmingAgain = true
+                } else {
+                    model.cleanSelected()
+                }
+            }
         } message: {
             Text("Caches are re-downloaded or rebuilt by their tools when needed. Native cleanup commands (brew, pnpm, uv…) are used when installed.")
+        }
+        .alert("Are you sure?", isPresented: $confirmingAgain) {
+            Button("Cancel", role: .cancel) {}
+            Button("Yes, \(model.usesTrash ? "move to Trash" : "clean") \(ByteFormat.string(model.selectedBytes))", role: .destructive) {
+                model.cleanSelected()
+            }
+        } message: {
+            Text(model.secondConfirmationReason ?? "")
         }
     }
 
