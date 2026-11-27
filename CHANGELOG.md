@@ -13,6 +13,16 @@ All notable changes to DiskCare are documented here. Versions follow [Semantic V
 - Terraform plugin cache: old provider versions are suggested only when no scanned project uses them.
 - Deletion audit log (`~/Library/Application Support/DiskCare/deletions.jsonl`); leftovers of an
   interrupted delete are listed and finished.
+- **Where is the space?** (Overview) and `diskcare explain`: large folders outside projects and caches,
+  `/Applications` and Homebrew sizes, local snapshots and what stays unaccounted for. Runs by itself
+  when free space drops by 10 GB / 2% that the scans do not explain. Report only.
+- **App data**: big folders in `~/Library/Application Support` (chat apps, AI apps…), report only.
+  Privacy-protected folders are never read.
+- Low-space alerts at `max(50 GB, 15%)` and critical at 8%, checked every 15 minutes without scanning,
+  with a "full in N days" forecast and the fastest-growing sources. Free space now matches `df`
+  (purgeable space shown separately).
+- First-run welcome with "Launch at login" on by default, catch-up scans after wake, and the age of the
+  last full scan (yellow after 2 days, red after 7); `diskcare doctor` reports a stale last scan.
 
 ### Changed
 - Doctor: `cargo-build-cache` replaces `cargo-shared-target`. It no longer recommends a shared
