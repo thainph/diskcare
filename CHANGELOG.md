@@ -2,7 +2,10 @@
 
 All notable changes to DiskCare are documented here. Versions follow [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-28
+
+Fixes the root causes of a disk that filled up unnoticed (a 141 GB shared Cargo target dir that
+`doctor --fix` had set up and nothing measured), and a redesigned, bilingual app.
 
 ### Added
 - **Shared Cargo build dirs** (`build.target-dir`, `build.build-dir`, `CARGO_TARGET_DIR`, also from shell rc
@@ -13,7 +16,7 @@ All notable changes to DiskCare are documented here. Versions follow [Semantic V
 - Terraform plugin cache: old provider versions are suggested only when no scanned project uses them.
 - Deletion audit log (`~/Library/Application Support/DiskCare/deletions.jsonl`); leftovers of an
   interrupted delete are listed and finished.
-- **Where is the space?** (Overview) and `diskcare explain`: large folders outside projects and caches,
+- **Where is the rest?** (Insights) and `diskcare explain`: large folders outside projects and caches,
   `/Applications` and Homebrew sizes, local snapshots and what stays unaccounted for. Runs by itself
   when free space drops by 10 GB / 2% that the scans do not explain. Report only.
 - **App data**: big folders in `~/Library/Application Support` (chat apps, AI apps…), report only.
@@ -23,6 +26,14 @@ All notable changes to DiskCare are documented here. Versions follow [Semantic V
   (purgeable space shown separately).
 - First-run welcome with "Launch at login" on by default, catch-up scans after wake, and the age of the
   last full scan (yellow after 2 days, red after 7); `diskcare doctor` reports a stale last scan.
+- **Redesigned app (Liquid Glass on macOS 26)**: four sections — Overview, Clean up, Insights,
+  Prevention. The Overview answers "how much is free and is it fine" with one "Clean X safely" action;
+  Clean up lists projects, caches and Docker in one place grouped by safety (Safe, Needs re-download
+  or rebuild, Report only) with one review sheet; Insights shows the 30-day free-space chart, what grew
+  fastest and where the rest of the disk is.
+- **English and Vietnamese** interface (Settings › Language; follows macOS by default).
+- `scripts/make-local-signing-identity.sh`: local builds signed with one identity keep macOS
+  permissions such as Full Disk Access across rebuilds.
 
 ### Changed
 - Doctor: `cargo-build-cache` replaces `cargo-shared-target`. It no longer recommends a shared
@@ -31,7 +42,9 @@ All notable changes to DiskCare are documented here. Versions follow [Semantic V
 - Deletion safety: paths are compared by inode (firmlinks, `/tmp` vs `/private/tmp`, letter case),
   unnormalized paths are refused, the checked directory must still be the one deleted, and personal
   folders are protected. Old versions/stale projects are suggested but no longer preselected.
-- Cleaning more than 20 GB, or anything "Select all safe" would not pick, asks a second time.
+- Cleaning more than 20 GB, or anything that must be rebuilt, needs an explicit acknowledgement in the
+  review sheet. Project suggestions are no longer preselected.
+- CI and releases build on macOS 26 runners (SDK 26).
 
 ## [0.1.1] - 2026-10-27
 

@@ -16,7 +16,7 @@ permissions:
 jobs:
   release:
     name: Build & publish (arm64)
-    runs-on: macos-15
+    runs-on: macos-26   # SDK 26 for Liquid Glass APIs
     timeout-minutes: 45
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}

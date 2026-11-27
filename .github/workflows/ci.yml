@@ -13,7 +13,7 @@ concurrency:
 jobs:
   build-and-test:
     name: Build & test (macOS, Apple silicon)
-    runs-on: macos-15   # arm64 runner
+    runs-on: macos-26   # arm64 runner; SDK 26 for Liquid Glass APIs
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
